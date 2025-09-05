@@ -1,0 +1,11 @@
+{
+  "_userDataDir": "/app/browser-local-storage",
+  "userDataDir": "/app/browser-local-storage",
+  "downloadsPath": "/app/browser-downloads",
+  "_sharedBrowser": true,
+  "chromiumSandbox": false,
+  "port": ${BROWSER_PORT},
+  "wsPath": "/srv",
+  "headless": false,
+  "args": ["--ozone-platform=wayland", "--disable-blink-features=AutomationControlled"]
+}
