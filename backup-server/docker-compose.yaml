@@ -1,0 +1,22 @@
+services:
+  backup:
+    restart: always
+    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+    tty: true
+    volumes:
+      - ./backup-entry.sh:/app/backup-entry.sh
+      - ./keys_RU.csv:/app/keys_RU.csv
+      - ./backup.py:/app/backup.py
+      - ./downloads:/app/downloads
+      - ./photos:/app/photos
+    entrypoint: [ "/app/backup-entry.sh" ]
+    working_dir: /app
+    command: [ "backup.py" ]
+    environment:
+      PLAYWRIGHT_VERSION: 1.54.0
+      BROWSER_SERVER_URL: ws://host.docker.internal:8082
+      ENCODED_PASS: ${ENCODED_PASS}
+      ENCODED_STATE: ${ENCODED_STATE}
+      GOOGLE_LANG: RU
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

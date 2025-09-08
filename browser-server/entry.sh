@@ -1,3 +1,3 @@
 #!/bin/sh
-pip install eciespy eth-keys
-mitmdump $@
+pip install --root-user-action=ignore --disable-pip-version-check -q eciespy eth-keys coincurve websockets
+python $@

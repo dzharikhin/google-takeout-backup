@@ -1,10 +1,9 @@
 services:
-  browser:
+  browser-headed:
+    restart: always
     image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
     entrypoint: [ "/bin/sh" ]
     command: [ "-c", "sed 's|$${BROWSER_PORT}|${BROWSER_PORT}|g' /app/browser-launch-params.json > /tmp/launch-params.json && npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=chromium --config /tmp/launch-params.json" ]
-#    user: $(id -u):$(id -g)
-#    network_mode: host
     init: true
     stdin_open: true
     tty: true
@@ -20,20 +19,53 @@ services:
       - /run/user/$(id -u)/$WAYLAND_DISPLAY:/run/user/$(id -u)/$WAYLAND_DISPLAY
     devices:
       - /dev/dri:/dev/dri
+    networks:
+      - secure_net
     expose:
       - "${BROWSER_PORT}"
-  proxy:
-    image: mitmproxy/mitmproxy:${MITM_VERSION}
+
+  proxy-headed:
+    restart: always
+    image: python:3.13-alpine
     entrypoint: [ "/app/entry.sh" ]
-    command: [ "-s", "/app/webs.py", "--listen-port", "8080", "--mode", "reverse:http://browser:${BROWSER_PORT}"]
+    command: [ "/app/webs.py" ]
+    tty: true
     init: true
     stdin_open: true
-    tty: true
-#    network_mode: host
     volumes:
       - ./entry.sh:/app/entry.sh
       - ./webs.py:/app/webs.py
     ports:
       - "${PROXY_PUBLIC_PORT}:8080"
-    depends_on:
-      - browser
+    environment:
+      BROWSER_URL: ws://browser-headed:${BROWSER_PORT}/srv
+    networks:
+      - secure_net
+
+  browser-manual:
+    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+    entrypoint: [ "/bin/sh" ]
+    command: [ "-c", "pip install playwright==${PLAYWRIGHT_VERSION} && exec python /app/manual_auth.py" ]
+    stdin_open: true
+    tty: true
+    init: true
+    environment:
+      XDG_RUNTIME_DIR: /tmp
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      RUN_HEADLESS: false
+    volumes:
+      - ./browser-launch-params.json:/app/browser-launch-params.json
+      - ./manual_auth.py:/app/manual_auth.py
+      - ./browser-local-storage/:/app/browser-local-storage
+      - ./browser-downloads/:/app/browser-downloads
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/${WAYLAND_DISPLAY}
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - /run/user/$(id -u)/$WAYLAND_DISPLAY:/run/user/$(id -u)/$WAYLAND_DISPLAY
+    devices:
+      - /dev/dri:/dev/dri
+    profiles:
+      - "manual"
+
+networks:
+  secure_net:
+    external: true
