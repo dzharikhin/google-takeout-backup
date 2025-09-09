@@ -7,4 +7,4 @@ else
   echo "Backup run is successful"
   SUBJECT="Google Takeout Backup run is successful"
 fi
-echo -e "Subject: $SUBJECT\n\n$(cat /tmp/gtb.out)" | ssmtp root
+printf "Subject: $SUBJECT\n\n%s" "$(cat /tmp/gtb.out)"

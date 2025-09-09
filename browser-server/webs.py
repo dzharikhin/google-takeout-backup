@@ -61,7 +61,6 @@ async def process_message(message):
                 f'\\1:"{val.decode()}"',
                 message,
             )
-            # print(f"{modified_message=}")
         except ValueError:
             print(f"failed to parse encrypted {message=}")
     elif re.search('"method":"newContext",.+"storageState":', message):
@@ -70,6 +69,7 @@ async def process_message(message):
         val = decrypt(secret_key, bytes.fromhex(encoded_state))
         message_dict["params"]["storageState"] = json.loads(val)
         modified_message = json.dumps(message_dict)
+    # print(f"{modified_message=}")
     return modified_message
 
 

@@ -42,7 +42,7 @@ You can run browser server on a dedicated node if it is connected to backup serv
    > By default encryption state is generated on `browser-server` startup, 
    > but if you run `browser-server` on a dedicated secure-enough node, you can provide stable keys from the env 
 3. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
-   1. there is [script](./backup-server/execute_backup.sh) as a skeleton for scheduling execution
+   1. there is [script](./backup-server/execute_backup.sh) as a **skeleton**(please set sending command) for scheduling execution
    > it is nice to have tool like `ssmtp` configured to be aware of success and failure runs.  
    > You can use command exit code to distinguish errors  
    > From time to time you need to reset `ENCODED_STATE` manually to keep the account authorized  
