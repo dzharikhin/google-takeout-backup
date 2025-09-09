@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import zipfile
 
-from playwright.async_api import async_playwright, TimeoutError
+from playwright.async_api import async_playwright, TimeoutError, Error
 
 TAKEOUT_BASEURL = "https://takeout.google.com/"
 
@@ -127,11 +127,19 @@ async def main():
                         await archive_part.click()
                         await handle_reauth(page)
                     download_meta = await download_info.value
-                    await download_meta.save_as(
-                        target_archive_download_path.joinpath(
-                            download_meta.suggested_filename
-                        )
-                    )
+                    for try_n in range(1, 4):
+                        try:
+                            await download_meta.save_as(
+                                target_archive_download_path.joinpath(
+                                    download_meta.suggested_filename
+                                )
+                            )
+                            break
+                        except Error:
+                            if try_n >= 3:
+                                raise
+                            print(f"retrying download {i} after {try_n}")
+
                     await download_meta.delete()
                     print(f"downloaded {i}/{len(archive_parts)} parts")
             except TimeoutError:
