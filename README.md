@@ -31,18 +31,15 @@ You can run browser server on a dedicated node if it is connected to backup serv
 
 ## Backup server
 1. go to [backup-server](./backup-server)
-   - `downloads` - working dir for backup intermediate processing: downloading, unpacking, sorting etc - can be local FS
-   - `photos` - that's where final backups are stored to
    - `keys_RU.csv` - locale-dependent button names to interact with browser UI controls. If you need another locale, see how to use `GOOGLE_LANG` env param
-      > there's no way to use locale-agnostic selectors there - css-classes are obfuscated and are changing ;(
-2. create `.env` and fill it with required values
-   1. open link from `browser-server`(7)
-   2. fill `ENCODED_STATE`, `ENCODED_PASS` with values obtained from `browser-server`(4) and your password
-   > `ENCODED_STATE`, `ENCODED_PASS` need to be encoded with new key each browser-server encryption keys are updated  
-   > By default encryption state is generated on `browser-server` startup, 
-   > but if you run `browser-server` on a dedicated secure-enough node, you can provide stable keys from the env 
-3. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
-   1. there is [script](./backup-server/execute_backup.sh) as a **skeleton**(please set sending command) for scheduling execution
-   > it is nice to have tool like `ssmtp` configured to be aware of success and failure runs.  
-   > You can use command exit code to distinguish errors  
-   > From time to time you need to reset `ENCODED_STATE` manually to keep the account authorized  
+   > there's no way to use locale-agnostic selectors there - css-classes are obfuscated and are changing ;(
+2. create `downloads` dir - it's for backup intermediate processing: downloading, unpacking, sorting, etc - can be local FS
+3. create `photos` dir - it's where final backups are stored to. If you have dedicated storage - here's convenient mount point
+4. create `.auth_encoded` file - open link from `browser-server`(7), encode data from `browser-server`(4) and paste encoded value into the file
+5. create `.env` file - open link from `browser-server`(7), encode your **password** and create var `ENCODED_PASS` with encoded value in the file
+   > `auth_encoded` and `ENCODED_PASS` need to be encoded with a new key each time `browser-server` encryption keys are updated  
+   > By default `browser-server` encryption state is generated on start, 
+   > but if you run `browser-server` on a dedicated secure-enough node, you can provide fixed keys from the env
+6. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
+   > there is [skeleton](./backup-server/execute_backup.sh) for scheduling execution  
+   > but it requires local customization to be used

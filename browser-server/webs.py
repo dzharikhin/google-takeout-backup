@@ -7,7 +7,7 @@ import sys
 import coincurve
 import eth_keys
 import websockets
-from ecies import decrypt
+from ecies import decrypt, encrypt
 from websockets import ServerConnection
 
 
@@ -37,12 +37,11 @@ async def proxy_websocket(client_websocket: ServerConnection):
 
             async def client_to_backend():
                 async for message in client_websocket:
-                    # print(f"{message=}")
-                    await backend_websocket.send(await process_message(message))
+                    await backend_websocket.send(await process_client_message(message))
 
             async def backend_to_client():
                 async for message in backend_websocket:
-                    await client_websocket.send(message)
+                    await client_websocket.send(await process_backend_message(message))
 
             await asyncio.gather(client_to_backend(), backend_to_client())
 
@@ -50,9 +49,8 @@ async def proxy_websocket(client_websocket: ServerConnection):
         print("Backend connection closed normally.")
 
 
-async def process_message(message):
+async def process_client_message(message):
     modified_message = message
-    # print(f"[{isinstance(message, bytes)}]{message=}")
     if encrypted_ := re.search('"input\\[type=password]","value":("[^"]+")', message):
         try:
             val = decrypt(secret_key, bytes.fromhex(encrypted_.group(1).strip('"')))
@@ -69,7 +67,24 @@ async def process_message(message):
         val = decrypt(secret_key, bytes.fromhex(encoded_state))
         message_dict["params"]["storageState"] = json.loads(val)
         modified_message = json.dumps(message_dict)
-    # print(f"{modified_message=}")
+
+    if os.getenv("LOG_CLIENT_MESSAGES"):
+        print(f"from client: {modified_message=}")
+    return modified_message
+
+
+async def process_backend_message(message):
+    modified_message = message
+    if '"result":{"cookies":' in message:
+        message_dict = json.loads(message)
+        if set(message_dict.get("result", {}).keys()) == set(["cookies", "origins"]):
+            state = json.dumps(message_dict["result"])
+            message_dict["result"] = {
+                "encoded_value": encrypt(public_key, state.encode()).hex()
+            }
+        modified_message = json.dumps(message_dict)
+    if os.getenv("LOG_BACKEND_MESSAGES"):
+        print(f"from backend: {modified_message=}")
     return modified_message
 
 
@@ -81,7 +96,7 @@ async def main():
     ) as server:
         print(f"started at {port=}")
         print(
-            f"Encode pass with public key: https://dzharikhin.github.io/ecies/?pk={public_key}"
+            f"Encode backup params with public key: https://dzharikhin.github.io/ecies/?pk={public_key}"
         )
         await server.serve_forever()
 

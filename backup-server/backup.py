@@ -11,7 +11,13 @@ from playwright.async_api import async_playwright, TimeoutError, Error
 
 TAKEOUT_BASEURL = "https://takeout.google.com/"
 
-auth_json_path = pathlib.Path(os.getenv("AUTH_FILE_PATH", "auth.json"))
+
+class EarlyReturn(Exception):
+    pass
+
+
+auth_json_path = pathlib.Path(".auth_encoded")
+
 downloads_path = pathlib.Path("downloads")
 backup_path = pathlib.Path("photos")
 timestamp_path = backup_path.joinpath(".timestamp")
@@ -56,8 +62,8 @@ async def handle_reauth(page):
 
 
 async def main():
-    if not os.getenv("ENCODED_STATE"):
-        raise Exception("ENCODED_STATE env is required")
+    if not auth_json_path:
+        raise Exception(f"{auth_json_path} is required")
     if not os.getenv("ENCODED_PASS"):
         raise Exception("ENCODED_PASS env is required")
     # snapshot_in_progress = any(downloads_path.iterdir())
@@ -69,6 +75,7 @@ async def main():
     print("inited config")
     async with async_playwright() as playwright:
         browser = None
+        page = None
         try:
             browser = await playwright.chromium.connect(
                 os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
@@ -76,7 +83,7 @@ async def main():
             )
             print("inited browser")
             page = await browser.new_page(
-                storage_state={"encoded_value": os.getenv("ENCODED_STATE")},
+                storage_state={"encoded_value": auth_json_path.read_text()},
                 accept_downloads=True,
                 viewport={"width": 1280, "height": 1024},
             )
@@ -85,8 +92,7 @@ async def main():
                 raise Exception("manual auth required")
             export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
             if not await export_in_progress.is_hidden():
-                print("Currently export is in progress, exiting")
-                return
+                raise EarlyReturn("Currently export is in progress, exiting")
 
             for f in downloads_path.iterdir():
                 if f.is_file():
@@ -106,8 +112,7 @@ async def main():
             )
             if not target_archive:
                 await request_new_archive(page)
-                print("We need new backup, requested export and exiting")
-                return
+                raise EarlyReturn("We need new backup, requested export and exiting")
 
             print(
                 f"selected target archive: {target_archive}, {target_archive_timestamp=}"
@@ -145,14 +150,28 @@ async def main():
             except TimeoutError:
                 if not await page.locator(f'div[role="dialog"]').is_hidden():
                     await request_new_archive(page)
-                    print("We need new backup, requested export and exiting")
-                    return
+                    raise EarlyReturn(
+                        "We need new backup, requested export and exiting"
+                    )
                 else:
                     raise
+            raise EarlyReturn("downloaded archives")
+        except EarlyReturn as e:
+            state = await page.context.storage_state()
+            auth_json_path.write_text(state["encoded_value"])
+            print(e)
+        except Exception:
+            if page and not page.is_closed():
+                await page.screenshot(
+                    path=downloads_path.joinpath(
+                        f"{encode_takeout_timestamp(datetime.datetime.now())}.jpg"
+                    )
+                )
+            raise
         finally:
             if browser:
                 await browser.close()
-    print("downloaded archives")
+    print("closed browser")
     for f in target_archive_download_path.glob("*.zip"):
         with zipfile.ZipFile(f, "r") as archive:
             # unarchived_path = target_archive_download_path.joinpath(os.path.commonpath(archive.namelist()))
