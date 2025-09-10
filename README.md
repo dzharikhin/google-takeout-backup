@@ -24,6 +24,9 @@ You can run browser server on a dedicated node if it is connected to backup serv
 1. go to [browser-server](./browser-server)
 2. `docker network create --opt encrypted --attachable secure_net`
 3. `docker-compose up browser-manual`
+   > if GUI display is not available on `browser-server` node - you can launch the script on any other device, auth data is compatible between different browser instances
+   > it may be more reasonable to call [script](browser-server/manual_auth.py) directly, without docker
+   > the script sets up browser to use `wayland` - if you need `X11` - tweak the script(browser launch args)
 4. authorize, then just close browser, copy auth data(from console output)
 5. `docker-compose down browser-manual`
 6. `docker-compose up`

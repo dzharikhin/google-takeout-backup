@@ -10,6 +10,9 @@ import zipfile
 from playwright.async_api import async_playwright, TimeoutError, Error
 
 TAKEOUT_BASEURL = "https://takeout.google.com/"
+BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
+    hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12"))
+)
 
 
 class EarlyReturn(Exception):
@@ -91,6 +94,18 @@ async def main():
             if page.url.startswith("https://accounts.google.com/v3/signin"):
                 raise Exception("manual auth required")
             export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
+            if (
+                last_snapshot_timestamp
+                and abs(
+                    from_last_backup := datetime.datetime.now()
+                    - last_snapshot_timestamp
+                )
+                < BACKUP_FRESHNESS_INTERVAL
+            ):
+                raise EarlyReturn(
+                    f"Last backup was made {from_last_backup.total_seconds() // 3600} hours ago. "
+                    f"Skipping new for at least {BACKUP_FRESHNESS_INTERVAL.total_seconds() // 3600} hours lag"
+                )
             if not await export_in_progress.is_hidden():
                 raise EarlyReturn("Currently export is in progress, exiting")
 
@@ -155,11 +170,13 @@ async def main():
                     )
                 else:
                     raise
-            raise EarlyReturn("downloaded archives")
+            state = await page.context.storage_state()
+            auth_json_path.write_text(state["encoded_value"])
         except EarlyReturn as e:
             state = await page.context.storage_state()
             auth_json_path.write_text(state["encoded_value"])
             print(e)
+            return
         except Exception:
             if page and not page.is_closed():
                 await page.screenshot(
@@ -172,6 +189,7 @@ async def main():
             if browser:
                 await browser.close()
     print("closed browser")
+
     for f in target_archive_download_path.glob("*.zip"):
         with zipfile.ZipFile(f, "r") as archive:
             # unarchived_path = target_archive_download_path.joinpath(os.path.commonpath(archive.namelist()))
