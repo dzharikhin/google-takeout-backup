@@ -25,6 +25,7 @@ You can run browser server on a dedicated node if it is connected to backup serv
 2. `docker network create --opt encrypted --attachable secure_net`
 3. `docker-compose up browser-manual`
    > if GUI display is not available on `browser-server` node - you can launch the script on any other device, auth data is compatible between different browser instances
+   > 
    > it may be more reasonable to call [script](browser-server/manual_auth.py) directly, without docker
    > the script sets up browser to use `wayland` - if you need `X11` - tweak the script(browser launch args)
 4. authorize, then just close browser, copy auth data(from console output)
@@ -40,7 +41,8 @@ You can run browser server on a dedicated node if it is connected to backup serv
 3. create `photos` dir - it's where final backups are stored to. If you have dedicated storage - here's convenient mount point
 4. create `.auth_encoded` file - open link from `browser-server`(7), encode data from `browser-server`(4) and paste encoded value into the file
 5. create `.env` file - open link from `browser-server`(7), encode your **password** and create var `ENCODED_PASS` with encoded value in the file
-   > `auth_encoded` and `ENCODED_PASS` need to be encoded with a new key each time `browser-server` encryption keys are updated  
+   > `.auth_encoded` and `ENCODED_PASS` need to be encoded with a new key each time `browser-server` encryption keys are updated  
+   > 
    > By default `browser-server` encryption state is generated on start, 
    > but if you run `browser-server` on a dedicated secure-enough node, you can provide fixed keys from the env
 6. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
