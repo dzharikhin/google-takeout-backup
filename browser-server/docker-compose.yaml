@@ -45,7 +45,7 @@ services:
   browser-manual:
     image: mcr.microsoft.com/playwright/python:v1.54.0-noble
     entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install playwright==${PLAYWRIGHT_VERSION} && exec python /app/manual_auth.py" ]
+    command: [ "-c", "pip install playwright==${PLAYWRIGHT_VERSION} && exec xvfb-run python /app/manual_auth.py" ]
     stdin_open: true
     tty: true
     init: true
