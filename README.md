@@ -23,7 +23,7 @@ Browser server services should interact via secure network exposing only one pub
 You can run browser server on a dedicated node if it is connected to backup server
 1. go to [browser-server](./browser-server)
 2. `docker network create --opt encrypted --attachable secure_net`
-3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) && docker-compose up browser-manual`
+3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) && docker-compose run --rm browser-manual`
    > if GUI display is available on `browser-server` node - it may be more reasonable to call [script](browser-server/manual_auth.py) directly, without docker with param `--skip_automation` to authorize manually
    > 
    > otherwise if something goes wrong with auth automation on `browser-server` node - you can launch the script on any other device, auth data is compatible between different browser instances
