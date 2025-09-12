@@ -45,7 +45,7 @@ services:
   browser-manual:
     image: mcr.microsoft.com/playwright/python:v1.54.0-noble
     entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install playwright==${PLAYWRIGHT_VERSION} && exec xvfb-run python /app/manual_auth.py" ]
+    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && exec xvfb-run python /app/manual_auth.py" ]
     stdin_open: true
     tty: true
     init: true
@@ -53,6 +53,8 @@ services:
       XDG_RUNTIME_DIR: /tmp
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
       RUN_HEADLESS: false
+      USER_E: ${USER_E}
+      USER_P: ${USER_P}
     volumes:
       - ./browser-launch-params.json:/app/browser-launch-params.json:ro
       - ./manual_auth.py:/app/manual_auth.py:ro

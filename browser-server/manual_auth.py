@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright
 
 
 async def main(skip_automation: bool = False):
+    # print(os.getenv("USER_E"))
     manual_auth_wait = [1]
 
     async def handle_manual_auth_close(page):
