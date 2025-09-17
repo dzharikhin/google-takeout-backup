@@ -1,68 +1,86 @@
 services:
-  browser-headed:
-    restart: always
-    image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
-    entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "sed 's|$${BROWSER_PORT}|${BROWSER_PORT}|g' /app/browser-launch-params.json > /tmp/launch-params.json && npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=chromium --config /tmp/launch-params.json" ]
-    init: true
-    stdin_open: true
-    tty: true
-    environment:
-      XDG_RUNTIME_DIR: /tmp
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
-    volumes:
-      - ./browser-launch-params.json:/app/browser-launch-params.json:ro
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/${WAYLAND_DISPLAY}
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
-      - /run/user/$(id -u)/$WAYLAND_DISPLAY:/run/user/$(id -u)/$WAYLAND_DISPLAY
-    devices:
-      - /dev/dri:/dev/dri
-    networks:
-      - secure_net
-    expose:
-      - "${BROWSER_PORT}"
-
-  proxy-headed:
+  proxy:
     restart: always
     image: python:3.13-alpine
-    entrypoint: [ "/app/entry.sh" ]
+    entrypoint: [ "/app/proxy-entrypoint.sh" ]
     command: [ "/app/webs.py" ]
     tty: true
     init: true
     stdin_open: true
     volumes:
-      - ./entry.sh:/app/entry.sh:ro
+      - ./proxy-entrypoint.sh:/app/proxy-entrypoint.sh:ro
       - ./webs.py:/app/webs.py:ro
     ports:
       - "${PROXY_PUBLIC_PORT}:8080"
     environment:
-      BROWSER_URL: ws://browser-headed:${BROWSER_PORT}/srv
+      BROWSER_URL: ws://browser:${BROWSER_PORT}/srv
     networks:
       - secure_net
+    profiles:
+      - "headed"
+      - "virtual"
+      - "headless"
 
-  browser-manual:
-    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
-    entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && exec xvfb-run --error-file=/app/browser-downloads/xvfb.log python /app/manual_auth.py" ]
+  #  launch browser headless - faster and more efficient, but more often is detected as a bot
+  browser-headless:
+    restart: always
+    image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+    entrypoint: [ "/app/browser-server-entrypoint.sh" ]
+    init: true
     stdin_open: true
     tty: true
-    init: true
+    environment:
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES}
+      BROWSER_PORT: ${BROWSER_PORT}
+      PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION}
+    volumes:
+      - ./browser-server-entrypoint.sh:/app/browser-server-entrypoint.sh:ro
+      - ./browser-launch-params.json:/app/browser-launch-params.json:ro
+      - ./browser-local-storage/:/app/browser-local-storage
+      - ./browser-downloads/:/app/browser-downloads
+    networks:
+      secure_net:
+        aliases:
+          - browser
+    expose:
+      - "${BROWSER_PORT}"
+    profiles:
+      - "headless"
+
+  #  launch browser headed on virtual display - helps to work out anti-bot protection
+  browser-virtual:
+    extends: browser-headless
+    profiles: !override
+      - "virtual"
+
+#  launch browser headed - maybe for debug purposes
+  browser-headed:
+    extends: browser-headless
     environment:
       XDG_RUNTIME_DIR: /tmp
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
-      RUN_HEADLESS: false
+    volumes:
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/${WAYLAND_DISPLAY}
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - /run/user/$(id -u)/$WAYLAND_DISPLAY:/run/user/$(id -u)/$WAYLAND_DISPLAY
+    devices:
+      - /dev/dri:/dev/dri
+    profiles: !override
+      - "headed"
+
+  browser-manual:
+    extends: browser-headed
+    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+    restart: no
+    entrypoint: [ "/bin/sh" ]
+    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && ([ \"$${HEADLESS_MODE}\" = \"virtual\" ] && echo 'running on virtual display' && exec xvfb-run --error-file=/app/browser-downloads/xvfb-manual.log python /app/manual_auth.py) || echo 'running on real display' && exec python /app/manual_auth.py" ]
+    environment:
+      HEADLESS_MODE: ${HEADLESS_MODE:-virtual} # headed, headless
       USER_E: ${USER_E}
       USER_P: ${USER_P}
     volumes:
-      - ./browser-launch-params.json:/app/browser-launch-params.json:ro
       - ./manual_auth.py:/app/manual_auth.py:ro
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-    devices:
-      - /dev/dri:/dev/dri
-    profiles:
+    profiles: !override
       - "manual"
 
 networks:

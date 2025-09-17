@@ -56,12 +56,15 @@ async def filter_most_recent_archive(
 
 
 async def handle_reauth(page):
-    if page.url.startswith("https://accounts.google.com/v3/signin"):
+    if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
+        await page.locator("form li").first.click()
+    if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
         await page.fill(
             selector="input[type=password]", value=os.getenv("ENCODED_PASS")
         )
-        # await page.screenshot(path="downloads/screen.jpg")
-        await page.get_by_text(f"{text_labels["proceed"]}").click()
+        await page.locator(f"button#passwordNext").or_(
+            page.locator(f"div#passwordNext")
+        ).click()
 
 
 async def main():
@@ -89,10 +92,16 @@ async def main():
                 storage_state={"encoded_value": auth_json_path.read_text()},
                 accept_downloads=True,
                 viewport={"width": 1280, "height": 1024},
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
             )
             await page.goto(f"{TAKEOUT_BASEURL}manage")
             if page.url.startswith("https://accounts.google.com/v3/signin"):
-                raise Exception("manual auth required")
+                print(f"auth required, trying to reauth on {page.url}")
+                await handle_reauth(page)
+
+            if page.url.startswith("https://accounts.google.com/v3/signin"):
+                raise Exception(f"manual auth required, page: {page.url}")
+
             export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
             if (
                 last_snapshot_timestamp
@@ -179,15 +188,20 @@ async def main():
             return
         except Exception:
             if page and not page.is_closed():
+                now = datetime.datetime.now()
+                downloads_path.joinpath(
+                    f"{encode_takeout_timestamp(now)}.url"
+                ).write_text(page.url)
+                downloads_path.joinpath(
+                    f"{encode_takeout_timestamp(now)}.html"
+                ).write_text(await page.content())
                 await page.screenshot(
-                    path=downloads_path.joinpath(
-                        f"{encode_takeout_timestamp(datetime.datetime.now())}.jpg"
-                    )
+                    path=downloads_path.joinpath(f"{encode_takeout_timestamp(now)}.jpg")
                 )
             raise
         finally:
-            if browser:
-                await browser.close()
+            if page:
+                await page.close()
     print("closed browser")
 
     for f in target_archive_download_path.glob("*.zip"):

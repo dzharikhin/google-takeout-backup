@@ -6,6 +6,6 @@
   "chromiumSandbox": false,
   "port": ${BROWSER_PORT},
   "wsPath": "/srv",
-  "headless": true,
-  "args": ["--ozone-platform=wayland", "--disable-blink-features=AutomationControlled"]
+  "headless": ${IS_HEADLESS_MODE},
+  "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-web-security", "--disable-infobars", "--disable-extensions", "--start-maximized"${ADDITIONAL_ARGS}]
 }

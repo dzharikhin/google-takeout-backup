@@ -23,15 +23,18 @@ Browser server services should interact via secure network exposing only one pub
 You can run browser server on a dedicated node if it is connected to backup server
 1. go to [browser-server](./browser-server)
 2. `docker network create --opt encrypted --attachable secure_net`
-3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) && docker-compose run --rm browser-manual`
-   > if GUI display is available on `browser-server` node - it may be more reasonable to call [script](browser-server/manual_auth.py) directly, without docker with param `--skip_automation` to authorize manually
+3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) COMPOSE_PROFILES=manual && docker-compose up`
+   > `docker-compose` may be `docker compose` in some distribs 
    > 
-   > otherwise if something goes wrong with auth automation on `browser-server` node - you can launch the script on any other device, auth data is compatible between different browser instances
-
-   > the script sets up browser to use `wayland` - if you need `X11` - tweak the script(browser launch args)
-4. authorize, then just close browser, copy auth data(from console output)
-5. `docker-compose down browser-manual`
-6. `docker-compose up`
+   > by default manual browser launches on a virtual display in `headed` mode to avoid automation detection
+   > 
+   > but if you want to run it headed on a real display or truly headless see `HEADLESS_MODE` variable.  
+   > If truly headed mode is enabled **no automation will be executed** - just open login page expecting you to login manually  
+   > Also note that truly headed mode is configured for `wayland`. if you need `X11` - tweak the script, please
+4. authorize either in automatic mode either in a manual(depending on `HEADLESS_MODE`)
+5. before manual container exits - auth data json is printed in console, store it
+6. `COMPOSE_PROFILES=virtual docker-compose up`
+   > you can choose other profiles: `headless`, `headed` - behaviour is the same as with manual browser
 7. store link `Encode pass with public key...` from logs
 
 ## Backup server
@@ -40,7 +43,7 @@ You can run browser server on a dedicated node if it is connected to backup serv
    > there's no way to use locale-agnostic selectors there - css-classes are obfuscated and are changing ;(
 2. create `downloads` dir - it's for backup intermediate processing: downloading, unpacking, sorting, etc - can be local FS
 3. create `photos` dir - it's where final backups are stored to. If you have dedicated storage - here's convenient mount point
-4. create `.auth_encoded` file - open link from `browser-server`(7), encode data from `browser-server`(4) and paste encoded value into the file
+4. create `.auth_encoded` file - open link from `browser-server`(7), encode data from `browser-server`(5) and paste encoded value into the file
 5. create `.env` file - open link from `browser-server`(7), encode your **password** and create var `ENCODED_PASS` with encoded value in the file
    > `.auth_encoded` and `ENCODED_PASS` need to be encoded with a new key each time `browser-server` encryption keys are updated  
    > 

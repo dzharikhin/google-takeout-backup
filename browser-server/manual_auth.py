@@ -8,7 +8,7 @@ import tempfile
 from playwright.async_api import async_playwright
 
 
-async def main(skip_automation: bool = False):
+async def main():
     # print(os.getenv("USER_E"))
     manual_auth_wait = [1]
 
@@ -23,6 +23,8 @@ async def main(skip_automation: bool = False):
             manual_auth_wait.pop()
 
     async with async_playwright() as playwright:
+        headless_mode = os.getenv("HEADLESS_MODE", "headed")
+        print(f"executing script with {headless_mode=}")
         browser = await playwright.chromium.launch(
             args=sum(
                 [
@@ -35,60 +37,77 @@ async def main(skip_automation: bool = False):
                         "--start-maximized",
                     ]
                 ],
-                ["--ozone-platform=wayland"] if skip_automation else [],
+                ["--ozone-platform=wayland"] if headless_mode == "headed" else [],
             ),
             ignore_default_args=[
                 "--disable-component-extensions-with-background-pages"
             ],
-            headless=bool(os.getenv("RUN_HEADLESS", "False").lower() == "True".lower()),
+            headless=bool(headless_mode.lower() == "headless".lower()),
         )
         page = await browser.new_page(
             viewport={"width": 1280, "height": 1024},
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
         )
         page.on("close", handle_manual_auth_close)
-        await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
-        if not skip_automation:
-            if page.url.startswith("https://accounts.google.com/v3/signin"):
-                email = os.getenv("USER_E")
-                await page.focus(selector="input[type=email]")
-                await page.type(
-                    selector="input[type=email]",
-                    text=email,
-                    delay=random.randint(11, 49),
+        try:
+            await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
+            if headless_mode == "headed":
+                print(
+                    f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successfull"
                 )
-                await page.wait_for_timeout(1666)
-                await page.locator(f"button#identifierNext").or_(
-                    page.locator(f"div#identifierNext")
-                ).click()
-                await page.wait_for_timeout(5000)
-                if not await page.get_by_text("Try again", exact=True).is_hidden():
-                    pathlib.Path("/app/browser-downloads/html").write_text(
-                        await page.content()
+            else:
+                print(f"{headless_mode=}: executing automatic login script")
+                if page.url.startswith("https://accounts.google.com/v3/signin"):
+                    email = os.getenv("USER_E")
+                    await page.focus(selector="input[type=email]")
+                    await page.type(
+                        selector="input[type=email]",
+                        text=email,
+                        delay=random.randint(11, 49),
                     )
-                    await page.screenshot(path="/app/browser-downloads/error_page.jpg")
-                    return
-                password = os.getenv("USER_P")
-                await page.screenshot(path="/app/browser-downloads/password_page.jpg")
-                await page.type(
-                    selector="input[type=password]",
-                    text=password,
-                    delay=random.randint(11, 49),
-                )
-                await page.wait_for_timeout(1537)
-                await page.locator(f"button#passwordNext").or_(
-                    page.locator(f"div#passwordNext")
-                ).click()
-            if page.url.startswith("https://accounts.google.com/v3/signin/challenge"):
-                # await page.screenshot(path="/app/browser-downloads/2fa_page.jpg")
-                await page.locator(f'div[data-challengetype="39"]').click()
-                await page.wait_for_url(
-                    "https://takeout.google.com/settings/takeout/custom/photos"
-                )
-                await handle_manual_auth_close(page)
+                    await page.wait_for_timeout(1666)
+                    await page.locator(f"button#identifierNext").or_(
+                        page.locator(f"div#identifierNext")
+                    ).click()
+                    await page.wait_for_timeout(5000)
+                    if not await page.get_by_text("Try again", exact=True).is_hidden():
+                        pathlib.Path("/app/browser-downloads/html").write_text(
+                            await page.content()
+                        )
+                        await page.screenshot(
+                            path="/app/browser-downloads/error_page.jpg"
+                        )
+                        return
+                    password = os.getenv("USER_P")
+                    await page.screenshot(
+                        path="/app/browser-downloads/password_page.jpg"
+                    )
+                    await page.type(
+                        selector="input[type=password]",
+                        text=password,
+                        delay=random.randint(11, 49),
+                    )
+                    await page.wait_for_timeout(1537)
+                    await page.locator(f"button#passwordNext").or_(
+                        page.locator(f"div#passwordNext")
+                    ).click()
+                if page.url.startswith(
+                    "https://accounts.google.com/v3/signin/challenge"
+                ):
+                    # await page.screenshot(path="/app/browser-downloads/2fa_page.jpg")
+                    await page.locator(f'div[data-challengetype="39"]').click()
+                    await page.wait_for_url(
+                        "https://takeout.google.com/settings/takeout/custom/photos"
+                    )
+                    await handle_manual_auth_close(page)
+        except Exception:
+            if page and not page.is_closed():
+                print(page.url, file=sys.stderr)
+                print(await page.content(), file=sys.stderr)
+            raise
         while manual_auth_wait:
             await asyncio.sleep(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main("--skip_automation" in sys.argv))
+    asyncio.run(main())
