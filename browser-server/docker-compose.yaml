@@ -61,8 +61,6 @@ services:
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
     volumes:
       - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/${WAYLAND_DISPLAY}
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
-      - /run/user/$(id -u)/$WAYLAND_DISPLAY:/run/user/$(id -u)/$WAYLAND_DISPLAY
     devices:
       - /dev/dri:/dev/dri
     profiles: !override
@@ -73,7 +71,7 @@ services:
     image: mcr.microsoft.com/playwright/python:v1.54.0-noble
     restart: no
     entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && ([ \"$${HEADLESS_MODE}\" = \"virtual\" ] && echo 'running on virtual display' && exec xvfb-run --error-file=/app/browser-downloads/xvfb-manual.log python /app/manual_auth.py) || echo 'running on real display' && exec python /app/manual_auth.py" ]
+    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && if [ \"$${HEADLESS_MODE}\" = \"virtual\" ]; then echo 'running on virtual display' && exec xvfb-run -a --error-file=/app/browser-downloads/xvfb-manual.log python /app/manual_auth.py; else echo 'running on real display' && exec python /app/manual_auth.py; fi" ]
     environment:
       HEADLESS_MODE: ${HEADLESS_MODE:-virtual} # headed, headless
       USER_E: ${USER_E}

@@ -187,17 +187,20 @@ async def main():
             print(e)
             return
         except Exception:
-            if page and not page.is_closed():
-                now = datetime.datetime.now()
-                downloads_path.joinpath(
-                    f"{encode_takeout_timestamp(now)}.url"
-                ).write_text(page.url)
-                downloads_path.joinpath(
-                    f"{encode_takeout_timestamp(now)}.html"
-                ).write_text(await page.content())
-                await page.screenshot(
-                    path=downloads_path.joinpath(f"{encode_takeout_timestamp(now)}.jpg")
-                )
+            try:
+                if page and not page.is_closed():
+                    now = datetime.datetime.now()
+                    downloads_path.joinpath(
+                        f"{encode_takeout_timestamp(now)}.url"
+                    ).write_text(page.url)
+                    downloads_path.joinpath(
+                        f"{encode_takeout_timestamp(now)}.html"
+                    ).write_text(await page.content())
+                    await page.screenshot(
+                        path=downloads_path.joinpath(f"{encode_takeout_timestamp(now)}.jpg")
+                    )
+            except Exception as e:
+                print(f"failed to collect diagnostic info with {e}, ignoring")
             raise
         finally:
             if page:

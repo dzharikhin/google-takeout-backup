@@ -16,7 +16,7 @@ sed -i -e "s|\${ADDITIONAL_ARGS}|${ADDITIONAL_ARGS}|g" /tmp/launch-params.json
 cat /tmp/launch-params.json
 if [ "${COMPOSE_PROFILES}" = "virtual" ]; then
   echo 'running on virtual display'
-  exec xvfb-run --error-file=/app/browser-downloads/xvfb-${COMPOSE_PROFILES}.log npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=chromium --config /tmp/launch-params.json
+  exec xvfb-run -a --error-file=/app/browser-downloads/xvfb-${COMPOSE_PROFILES}.log npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=chromium --config /tmp/launch-params.json
 else
   echo 'running on real display'
   exec npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=chromium --config /tmp/launch-params.json

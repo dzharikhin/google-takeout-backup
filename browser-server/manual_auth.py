@@ -7,9 +7,10 @@ import tempfile
 
 from playwright.async_api import async_playwright
 
+downloads_path = pathlib.Path("/app/browser-downloads")
 
 async def main():
-    # print(os.getenv("USER_E"))
+    print(os.getenv("DISPLAY"))
     manual_auth_wait = [1]
 
     async def handle_manual_auth_close(page):
@@ -35,6 +36,7 @@ async def main():
                         "--disable-infobars",
                         "--disable-extensions",
                         "--start-maximized",
+                        "--disable-gpu",
                     ]
                 ],
                 ["--ozone-platform=wayland"] if headless_mode == "headed" else [],
@@ -71,17 +73,8 @@ async def main():
                     ).click()
                     await page.wait_for_timeout(5000)
                     if not await page.get_by_text("Try again", exact=True).is_hidden():
-                        pathlib.Path("/app/browser-downloads/html").write_text(
-                            await page.content()
-                        )
-                        await page.screenshot(
-                            path="/app/browser-downloads/error_page.jpg"
-                        )
-                        return
+                        raise Exception("failed to enter email")
                     password = os.getenv("USER_P")
-                    await page.screenshot(
-                        path="/app/browser-downloads/password_page.jpg"
-                    )
                     await page.type(
                         selector="input[type=password]",
                         text=password,
@@ -94,16 +87,26 @@ async def main():
                 if page.url.startswith(
                     "https://accounts.google.com/v3/signin/challenge"
                 ):
-                    # await page.screenshot(path="/app/browser-downloads/2fa_page.jpg")
+                    # await page.screenshot(path=downloads_path.joinpath("2fa_page.jpg")
                     await page.locator(f'div[data-challengetype="39"]').click()
                     await page.wait_for_url(
                         "https://takeout.google.com/settings/takeout/custom/photos"
                     )
                     await handle_manual_auth_close(page)
         except Exception:
-            if page and not page.is_closed():
-                print(page.url, file=sys.stderr)
-                print(await page.content(), file=sys.stderr)
+            try:
+                if page and not page.is_closed():
+                    downloads_path.joinpath(
+                        f"error_url"
+                    ).write_text(page.url)
+                    downloads_path.joinpath(
+                        f"error_html"
+                    ).write_text(await page.content())
+                    await page.screenshot(
+                        path=downloads_path.joinpath(f"error_page_screenshot.jpg")
+                    )
+            except Exception as e:
+                print(f"failed to collect diagnostic info: {e}", file=sys.stderr)
             raise
         while manual_auth_wait:
             await asyncio.sleep(1)
