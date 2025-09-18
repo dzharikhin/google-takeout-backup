@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright
 
 downloads_path = pathlib.Path("/app/browser-downloads")
 
+
 async def main():
     print(os.getenv("DISPLAY"))
     manual_auth_wait = [1]
@@ -96,12 +97,10 @@ async def main():
         except Exception:
             try:
                 if page and not page.is_closed():
-                    downloads_path.joinpath(
-                        f"error_url"
-                    ).write_text(page.url)
-                    downloads_path.joinpath(
-                        f"error_html"
-                    ).write_text(await page.content())
+                    downloads_path.joinpath(f"error_url").write_text(page.url)
+                    downloads_path.joinpath(f"error_html").write_text(
+                        await page.content()
+                    )
                     await page.screenshot(
                         path=downloads_path.joinpath(f"error_page_screenshot.jpg")
                     )

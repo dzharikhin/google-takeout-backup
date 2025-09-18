@@ -82,6 +82,7 @@ async def main():
     async with async_playwright() as playwright:
         browser = None
         page = None
+        now = datetime.datetime.now()
         try:
             browser = await playwright.chromium.connect(
                 os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
@@ -105,15 +106,16 @@ async def main():
             export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
             if (
                 last_snapshot_timestamp
-                and abs(
-                    from_last_backup := datetime.datetime.now()
-                    - last_snapshot_timestamp
-                )
+                and abs(from_last_backup := now - last_snapshot_timestamp)
                 < BACKUP_FRESHNESS_INTERVAL
             ):
                 raise EarlyReturn(
                     f"Last backup was made {from_last_backup.total_seconds() // 3600} hours ago. "
                     f"Skipping new for at least {BACKUP_FRESHNESS_INTERVAL.total_seconds() // 3600} hours lag"
+                )
+            else:
+                print(
+                    f"Last backup was made at {last_snapshot_timestamp}, {now=}. Checking if new backup is available"
                 )
             if not await export_in_progress.is_hidden():
                 raise EarlyReturn("Currently export is in progress, exiting")
@@ -197,7 +199,9 @@ async def main():
                         f"{encode_takeout_timestamp(now)}.html"
                     ).write_text(await page.content())
                     await page.screenshot(
-                        path=downloads_path.joinpath(f"{encode_takeout_timestamp(now)}.jpg")
+                        path=downloads_path.joinpath(
+                            f"{encode_takeout_timestamp(now)}.jpg"
+                        )
                     )
             except Exception as e:
                 print(f"failed to collect diagnostic info with {e}, ignoring")
