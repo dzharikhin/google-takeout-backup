@@ -58,9 +58,9 @@ services:
     extends: browser-headless
     environment:
       XDG_RUNTIME_DIR: /tmp
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
     volumes:
-      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/${WAYLAND_DISPLAY}
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/${WAYLAND_DISPLAY:-wayland-0}
     devices:
       - /dev/dri:/dev/dri
     profiles: !override
