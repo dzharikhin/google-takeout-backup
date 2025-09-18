@@ -33,9 +33,9 @@ You can run browser server on a dedicated node if it is connected to backup serv
    > Also note that truly headed mode is configured for `wayland`. if you need `X11` - tweak the script, please
 4. authorize either in automatic mode either in a manual(depending on `HEADLESS_MODE`)
 5. before manual container exits - auth data json is printed in console, store it
-6. `COMPOSE_PROFILES=virtual docker-compose up`
+6. `COMPOSE_PROFILES=virtual docker-compose up -d`
    > you can choose other profiles: `headless`, `headed` - behaviour is the same as with manual browser
-7. store link `Encode pass with public key...` from logs
+7. store link `Encode pass with public key...` from logs: `docker-compose logs proxy`
 
 ## Backup server
 1. go to [backup-server](./backup-server)
