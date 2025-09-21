@@ -57,7 +57,7 @@ async def filter_most_recent_archive(
 
 async def handle_reauth(page):
     if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-        await page.locator("form li").first.click()
+        await page.locator("form li>div").first.click()
     if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
         await page.fill(
             selector="input[type=password]", value=os.getenv("ENCODED_PASS")
