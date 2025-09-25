@@ -58,7 +58,12 @@ async def filter_most_recent_archive(
 async def handle_reauth(page, target_url=None, timeout_millis=60000):
     if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
         await page.locator("form li>div").first.click()
-        await page.wait_for_url(lambda u: u.startswith("https://accounts.google.com/v3/signin/challenge/pwd"), timeout=timeout_millis)
+        await page.wait_for_url(
+            lambda u: u.startswith(
+                "https://accounts.google.com/v3/signin/challenge/pwd"
+            ),
+            timeout=timeout_millis,
+        )
     if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
         await page.fill(
             selector="input[type=password]", value=os.getenv("ENCODED_PASS")
@@ -67,7 +72,9 @@ async def handle_reauth(page, target_url=None, timeout_millis=60000):
             page.locator(f"div#passwordNext")
         ).click()
         if target_url:
-            await page.wait_for_url(lambda u: u.startswith(target_url), timeout=timeout_millis)
+            await page.wait_for_url(
+                lambda u: u.startswith(target_url), timeout=timeout_millis
+            )
 
 
 async def main():
@@ -83,150 +90,162 @@ async def main():
 
     print("inited config")
     async with async_playwright() as playwright:
-        browser = None
-        console = []
-        network = []
-        page = None
-        now = datetime.datetime.now()
-        try:
-            browser = await playwright.chromium.connect(
-                os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
-                timeout=30000,
-            )
+        async with await playwright.chromium.connect(
+            os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
+            timeout=30000,
+        ) as browser:
             print("inited browser")
-            page = await browser.new_page(
+            async with browser.new_page(
                 storage_state={"encoded_value": auth_json_path.read_text()},
                 accept_downloads=True,
                 viewport={"width": 1280, "height": 1024},
                 user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            )
-            async def handle_request(request):
-                network.append(f"Request: {request.method} {request.url}")
+            ) as page:
+                console = []
 
-            async def handle_response(response):
-                network.append(f"Response: {response.status} {response.url}")
+                async def handle_console(msg):
+                    console.append(msg.text)
 
-            page.on("console", lambda msg: console.append(msg.text))
-            page.on("request", handle_request)
-            page.on("response", handle_response)
-            await page.goto(f"{TAKEOUT_BASEURL}manage")
-            if page.url.startswith("https://accounts.google.com/v3/signin"):
-                print(f"auth required, trying to reauth on {page.url}")
-                await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}manage")
+                page.on("console", handle_console)
 
-            export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
-            if (
-                last_snapshot_timestamp
-                and abs(from_last_backup := now - last_snapshot_timestamp)
-                < BACKUP_FRESHNESS_INTERVAL
-            ):
-                raise EarlyReturn(
-                    f"Last backup was made {from_last_backup.total_seconds() // 3600} hours ago. "
-                    f"Skipping new for at least {BACKUP_FRESHNESS_INTERVAL.total_seconds() // 3600} hours lag"
-                )
-            else:
-                print(
-                    f"Last backup was made at {last_snapshot_timestamp}, {now=}. Checking if new backup is available"
-                )
-            if not await export_in_progress.is_hidden():
-                raise EarlyReturn("Currently export is in progress, exiting")
+                network = []
 
-            for f in downloads_path.iterdir():
-                if f.is_file():
-                    f.unlink()
-                elif f.is_dir():
-                    shutil.rmtree(f)
+                async def handle_request(request):
+                    network.append(f"Request: {request.method} {request.url}")
 
-            ready_archive_links = await page.locator(
-                "a",
-                has=page.locator("p", has_text=f"{text_labels["export.ready.label"]}"),
-            ).all()
-            ready_archive_links = [
-                await link.get_attribute("href") for link in ready_archive_links
-            ]
-            target_archive, target_archive_timestamp = await filter_most_recent_archive(
-                page, ready_archive_links, last_snapshot_timestamp
-            )
-            if not target_archive:
-                await request_new_archive(page)
-                raise EarlyReturn("We need new backup, requested export and exiting")
+                async def handle_response(response):
+                    network.append(f"Response: {response.status} {response.url}")
 
-            print(
-                f"selected target archive: {target_archive}, {target_archive_timestamp=}"
-            )
-            target_archive_download_path = downloads_path.joinpath(
-                target_archive.split("/")[-1]
-            )
-            target_archive_download_path.mkdir()
-            await page.goto(f"{TAKEOUT_BASEURL}{target_archive}")
-            archive_parts = await page.locator(
-                f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
-            ).all()
-            print(f"going to download {len(archive_parts)} parts")
-            try:
-                for i, archive_part in enumerate(archive_parts, 1):
-                    async with page.expect_download() as download_info:
-                        await archive_part.click()
-                        await handle_reauth(page)
-                    download_meta = await download_info.value
-                    for try_n in range(1, 4):
-                        try:
-                            await download_meta.save_as(
-                                target_archive_download_path.joinpath(
-                                    download_meta.suggested_filename
-                                )
+                page.on("request", handle_request)
+                page.on("response", handle_response)
+
+                print("inited page")
+                now = datetime.datetime.now()
+                try:
+                    await page.goto(f"{TAKEOUT_BASEURL}manage")
+                    if page.url.startswith("https://accounts.google.com/v3/signin"):
+                        print(f"auth required, trying to reauth on {page.url}")
+                        await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}manage")
+
+                    export_in_progress = page.locator(
+                        f"text={text_labels["decline.export"]}"
+                    )
+                    if (
+                        last_snapshot_timestamp
+                        and abs(from_last_backup := now - last_snapshot_timestamp)
+                        < BACKUP_FRESHNESS_INTERVAL
+                    ):
+                        raise EarlyReturn(
+                            f"Last backup was made {from_last_backup.total_seconds() // 3600} hours ago. "
+                            f"Skipping new for at least {BACKUP_FRESHNESS_INTERVAL.total_seconds() // 3600} hours lag"
+                        )
+                    else:
+                        print(
+                            f"Last backup was made at {last_snapshot_timestamp}, {now=}. Checking if new backup is available"
+                        )
+                    if not await export_in_progress.is_hidden():
+                        raise EarlyReturn("Currently export is in progress, exiting")
+
+                    for f in downloads_path.iterdir():
+                        if f.is_file():
+                            f.unlink()
+                        elif f.is_dir():
+                            shutil.rmtree(f)
+
+                    ready_archive_links = await page.locator(
+                        "a",
+                        has=page.locator(
+                            "p", has_text=f"{text_labels["export.ready.label"]}"
+                        ),
+                    ).all()
+                    ready_archive_links = [
+                        await link.get_attribute("href") for link in ready_archive_links
+                    ]
+                    target_archive, target_archive_timestamp = (
+                        await filter_most_recent_archive(
+                            page, ready_archive_links, last_snapshot_timestamp
+                        )
+                    )
+                    if not target_archive:
+                        await request_new_archive(page)
+                        raise EarlyReturn(
+                            "We need new backup, requested export and exiting"
+                        )
+
+                    print(
+                        f"selected target archive: {target_archive}, {target_archive_timestamp=}"
+                    )
+                    target_archive_download_path = downloads_path.joinpath(
+                        target_archive.split("/")[-1]
+                    )
+                    target_archive_download_path.mkdir()
+                    await page.goto(f"{TAKEOUT_BASEURL}{target_archive}")
+                    archive_parts = await page.locator(
+                        f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
+                    ).all()
+                    print(f"going to download {len(archive_parts)} parts")
+                    try:
+                        for i, archive_part in enumerate(archive_parts, 1):
+                            async with page.expect_download() as download_info:
+                                await archive_part.click()
+                                await handle_reauth(page)
+                            download_meta = await download_info.value
+                            for try_n in range(1, 4):
+                                try:
+                                    await download_meta.save_as(
+                                        target_archive_download_path.joinpath(
+                                            download_meta.suggested_filename
+                                        )
+                                    )
+                                    break
+                                except Error:
+                                    if try_n >= 3:
+                                        raise
+                                    print(f"retrying download {i} after {try_n}")
+
+                            await download_meta.delete()
+                            print(f"downloaded {i}/{len(archive_parts)} parts")
+                    except TimeoutError:
+                        if not await page.locator(f'div[role="dialog"]').is_hidden():
+                            await request_new_archive(page)
+                            raise EarlyReturn(
+                                "We need new backup, requested export and exiting"
                             )
-                            break
-                        except Error:
-                            if try_n >= 3:
-                                raise
-                            print(f"retrying download {i} after {try_n}")
-
-                    await download_meta.delete()
-                    print(f"downloaded {i}/{len(archive_parts)} parts")
-            except TimeoutError:
-                if not await page.locator(f'div[role="dialog"]').is_hidden():
-                    await request_new_archive(page)
-                    raise EarlyReturn(
-                        "We need new backup, requested export and exiting"
-                    )
-                else:
+                        else:
+                            raise
+                    state = await page.context.storage_state()
+                    auth_json_path.write_text(state["encoded_value"])
+                except EarlyReturn as e:
+                    state = await page.context.storage_state()
+                    auth_json_path.write_text(state["encoded_value"])
+                    print(e)
+                    return
+                except Exception:
+                    try:
+                        if page and not page.is_closed():
+                            now = datetime.datetime.now()
+                            encoded_timestamp = encode_takeout_timestamp(now)
+                            downloads_path.joinpath(
+                                f"{encoded_timestamp}.url"
+                            ).write_text(page.url)
+                            downloads_path.joinpath(
+                                f"{encoded_timestamp}.html"
+                            ).write_text(await page.content())
+                            await page.screenshot(
+                                path=downloads_path.joinpath(f"{encoded_timestamp}.jpg")
+                            )
+                            if console:
+                                downloads_path.joinpath(
+                                    f"{encoded_timestamp}.console"
+                                ).write_text("\n".join(console))
+                            if network:
+                                downloads_path.joinpath(
+                                    f"{encoded_timestamp}.net"
+                                ).write_text("\n".join(network))
+                    except Exception as e:
+                        print(f"failed to collect diagnostic info with {e}, ignoring")
                     raise
-            state = await page.context.storage_state()
-            auth_json_path.write_text(state["encoded_value"])
-        except EarlyReturn as e:
-            state = await page.context.storage_state()
-            auth_json_path.write_text(state["encoded_value"])
-            print(e)
-            return
-        except Exception:
-            try:
-                if page and not page.is_closed():
-                    now = datetime.datetime.now()
-                    encoded_timestamp = encode_takeout_timestamp(now)
-                    downloads_path.joinpath(f"{encoded_timestamp}.url").write_text(
-                        page.url
-                    )
-                    downloads_path.joinpath(f"{encoded_timestamp}.html").write_text(
-                        await page.content()
-                    )
-                    await page.screenshot(
-                        path=downloads_path.joinpath(f"{encoded_timestamp}.jpg")
-                    )
-                    if console:
-                        downloads_path.joinpath(
-                            f"{encoded_timestamp}.console"
-                        ).write_text("\n".join(console))
-                    if network:
-                        downloads_path.joinpath(
-                            f"{encoded_timestamp}.net"
-                        ).write_text("\n".join(network))
-            except Exception as e:
-                print(f"failed to collect diagnostic info with {e}, ignoring")
-            raise
-        finally:
-            if page:
-                await page.close()
+
     print("closed browser")
 
     for f in target_archive_download_path.glob("*.zip"):
