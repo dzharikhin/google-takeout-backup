@@ -55,9 +55,10 @@ async def filter_most_recent_archive(
     return None, None
 
 
-async def handle_reauth(page):
+async def handle_reauth(page, target_url=None, timeout_millis=60000):
     if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
         await page.locator("form li>div").first.click()
+        await page.wait_for_url(lambda u: u.startswith("https://accounts.google.com/v3/signin/challenge/pwd"), timeout=timeout_millis)
     if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
         await page.fill(
             selector="input[type=password]", value=os.getenv("ENCODED_PASS")
@@ -65,6 +66,8 @@ async def handle_reauth(page):
         await page.locator(f"button#passwordNext").or_(
             page.locator(f"div#passwordNext")
         ).click()
+        if target_url:
+            await page.wait_for_url(lambda u: u.startswith(target_url), timeout=timeout_millis)
 
 
 async def main():
@@ -81,6 +84,8 @@ async def main():
     print("inited config")
     async with async_playwright() as playwright:
         browser = None
+        console = []
+        network = []
         page = None
         now = datetime.datetime.now()
         try:
@@ -95,13 +100,19 @@ async def main():
                 viewport={"width": 1280, "height": 1024},
                 user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
             )
+            async def handle_request(request):
+                network.append(f"Request: {request.method} {request.url}")
+
+            async def handle_response(response):
+                network.append(f"Response: {response.status} {response.url}")
+
+            page.on("console", lambda msg: console.append(msg.text))
+            page.on("request", handle_request)
+            page.on("response", handle_response)
             await page.goto(f"{TAKEOUT_BASEURL}manage")
             if page.url.startswith("https://accounts.google.com/v3/signin"):
                 print(f"auth required, trying to reauth on {page.url}")
-                await handle_reauth(page)
-
-            if page.url.startswith("https://accounts.google.com/v3/signin"):
-                raise Exception(f"manual auth required, page: {page.url}")
+                await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}manage")
 
             export_in_progress = page.locator(f"text={text_labels["decline.export"]}")
             if (
@@ -192,17 +203,24 @@ async def main():
             try:
                 if page and not page.is_closed():
                     now = datetime.datetime.now()
-                    downloads_path.joinpath(
-                        f"{encode_takeout_timestamp(now)}.url"
-                    ).write_text(page.url)
-                    downloads_path.joinpath(
-                        f"{encode_takeout_timestamp(now)}.html"
-                    ).write_text(await page.content())
-                    await page.screenshot(
-                        path=downloads_path.joinpath(
-                            f"{encode_takeout_timestamp(now)}.jpg"
-                        )
+                    encoded_timestamp = encode_takeout_timestamp(now)
+                    downloads_path.joinpath(f"{encoded_timestamp}.url").write_text(
+                        page.url
                     )
+                    downloads_path.joinpath(f"{encoded_timestamp}.html").write_text(
+                        await page.content()
+                    )
+                    await page.screenshot(
+                        path=downloads_path.joinpath(f"{encoded_timestamp}.jpg")
+                    )
+                    if console:
+                        downloads_path.joinpath(
+                            f"{encoded_timestamp}.console"
+                        ).write_text("\n".join(console))
+                    if network:
+                        downloads_path.joinpath(
+                            f"{encoded_timestamp}.net"
+                        ).write_text("\n".join(network))
             except Exception as e:
                 print(f"failed to collect diagnostic info with {e}, ignoring")
             raise
