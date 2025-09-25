@@ -95,12 +95,13 @@ async def main():
             timeout=30000,
         ) as browser:
             print("inited browser")
-            async with browser.new_page(
+            page = await browser.new_page(
                 storage_state={"encoded_value": auth_json_path.read_text()},
                 accept_downloads=True,
                 viewport={"width": 1280, "height": 1024},
                 user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            ) as page:
+            )
+            async with page:
                 console = []
 
                 async def handle_console(msg):
