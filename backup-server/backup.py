@@ -13,6 +13,7 @@ TAKEOUT_BASEURL = "https://takeout.google.com/"
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
     hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12"))
 )
+TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
 
 
 class EarlyReturn(Exception):
@@ -38,7 +39,7 @@ async def filter_most_recent_archive(
         report_download_button = page.locator(
             f'a[aria-label="{text_labels["report.download"]}"]'
         )
-        async with page.expect_download() as download_info:
+        async with page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
             await report_download_button.click()
             await handle_reauth(page)
         download_meta = await download_info.value
@@ -55,26 +56,40 @@ async def filter_most_recent_archive(
     return None, None
 
 
-async def handle_reauth(page, target_url=None, timeout_millis=60000):
-    if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-        await page.locator("form li>div").first.click()
-        await page.wait_for_url(
-            lambda u: u.startswith(
-                "https://accounts.google.com/v3/signin/challenge/pwd"
-            ),
-            timeout=timeout_millis,
-        )
-    if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
-        await page.fill(
-            selector="input[type=password]", value=os.getenv("ENCODED_PASS")
-        )
-        await page.locator(f"button#passwordNext").or_(
-            page.locator(f"div#passwordNext")
-        ).click()
-        if target_url:
+async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2, max_tries=3):
+    tries = 0
+    while tries < max_tries:
+        if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
+            await page.locator("form li>div").first.click()
             await page.wait_for_url(
-                lambda u: u.startswith(target_url), timeout=timeout_millis
+                lambda u: u.startswith(
+                    "https://accounts.google.com/v3/signin/challenge/pwd"
+                ),
+                timeout=timeout_millis,
             )
+        elif page.url.startswith("https://gds.google.com/web/homeaddress"):
+            element_by_exact_text = page.get_by_text(f"{text_labels["skip"]}")
+            await element_by_exact_text.click()
+            await page.wait_for_url(
+                lambda u: u.startswith(
+                    "https://accounts.google.com/v3/signin/challenge/pwd"
+                ),
+                timeout=timeout_millis,
+            )
+        if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
+            await page.fill(
+                selector="input[type=password]", value=os.getenv("ENCODED_PASS")
+            )
+            await page.locator(f"button#passwordNext").or_(
+                page.locator(f"div#passwordNext")
+            ).click()
+            if target_url:
+                await page.wait_for_url(
+                    lambda u: u.startswith(target_url), timeout=timeout_millis
+                )
+            return
+        tries += 1
+    raise Exception(f"Failed to auth for {tries} tries")
 
 
 async def main():
@@ -92,7 +107,7 @@ async def main():
     async with async_playwright() as playwright:
         async with await playwright.chromium.connect(
             os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
-            timeout=30000,
+            timeout=TIMEOUT_MILLIS,
         ) as browser:
             print("inited browser")
             page = await browser.new_page(
@@ -187,7 +202,7 @@ async def main():
                     print(f"going to download {len(archive_parts)} parts")
                     try:
                         for i, archive_part in enumerate(archive_parts, 1):
-                            async with page.expect_download() as download_info:
+                            async with page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
                                 await archive_part.click()
                                 await handle_reauth(page)
                             download_meta = await download_info.value
