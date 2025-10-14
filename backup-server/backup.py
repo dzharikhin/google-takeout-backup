@@ -36,6 +36,7 @@ async def filter_most_recent_archive(
 ):
     for ready_archive_link in ready_archive_links:
         await page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
+        await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}{ready_archive_link}")
         report_download_button = page.locator(
             f'a[aria-label="{text_labels["report.download"]}"]'
         )
@@ -89,7 +90,6 @@ async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2
                 )
             return
         tries += 1
-    raise Exception(f"Failed to auth for {tries} tries")
 
 
 async def main():
@@ -196,6 +196,7 @@ async def main():
                     )
                     target_archive_download_path.mkdir()
                     await page.goto(f"{TAKEOUT_BASEURL}{target_archive}")
+                    await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}{target_archive}")
                     archive_parts = await page.locator(
                         f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
                     ).all()
