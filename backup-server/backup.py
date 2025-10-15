@@ -65,7 +65,7 @@ async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2
         elif page.url.startswith("https://gds.google.com/web/homeaddress"):
             element_by_exact_text = page.get_by_text(f"{text_labels["skip"]}")
             await element_by_exact_text.click()
-        await asyncio.sleep(timeout_millis / max_tries)
+        await asyncio.sleep(timeout_millis / 1000 / max_tries)
         if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
             await page.fill(
                 selector="input[type=password]", value=os.getenv("ENCODED_PASS")
