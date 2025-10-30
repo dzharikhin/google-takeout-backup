@@ -3,8 +3,10 @@ import csv
 import datetime
 import os
 import pathlib
+import re
 import shutil
 import subprocess
+import sys
 import zipfile
 
 from playwright.async_api import async_playwright, TimeoutError, Error
@@ -259,25 +261,36 @@ async def main():
             # unarchived_path = target_archive_download_path.joinpath(os.path.commonpath(archive.namelist()))
             archive.extractall(target_archive_download_path)
     print("unpacked archives")
+    unpacked_root_dir = [item for item in target_archive_download_path.iterdir() if item.is_dir()][0]
+    for root, dirs, files in unpacked_root_dir.walk():
+        for path in dirs:
+            folder_path = pathlib.Path(root.joinpath(path))
+            if m := re.match(text_labels["year.folder.template"], folder_path.stem):
+                folder_path.rename(folder_path.parent.joinpath(f"Photos from {m.group(1)}"))
+
     processed_photos_path = target_archive_download_path.joinpath("export")
-    subprocess.run(
-        [
-            "gpth",
-            "--copy",
-            "-i",
-            [item for item in target_archive_download_path.iterdir() if item.is_dir()][
-                0
+    try:
+        subprocess.run(
+            [
+                "gpth",
+                "--copy",
+                "-i",
+                unpacked_root_dir,
+                "-o",
+                processed_photos_path,
+                "--albums",
+                "duplicate-copy",
+                "--no-divide-to-dates",
             ],
-            "-o",
-            processed_photos_path,
-            "--albums",
-            "duplicate-copy",
-            "--no-divide-to-dates",
-        ],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Stderr: {e.stderr}", file=sys.stderr)
+        print(f"Stdout: {e.stdout}")
+        raise e
+
     all_photos_path = processed_photos_path.joinpath(
         os.getenv("GPTH_DEFAULT_FOLDER_NAME", "ALL_PHOTOS")
     )
