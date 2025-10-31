@@ -261,12 +261,18 @@ async def main():
             # unarchived_path = target_archive_download_path.joinpath(os.path.commonpath(archive.namelist()))
             archive.extractall(target_archive_download_path)
     print("unpacked archives")
+
     unpacked_root_dir = [item for item in target_archive_download_path.iterdir() if item.is_dir()][0]
+    renamed_folders = []
     for root, dirs, files in unpacked_root_dir.walk():
         for path in dirs:
             folder_path = pathlib.Path(root.joinpath(path))
             if m := re.match(text_labels["year.folder.template"], folder_path.stem):
-                folder_path.rename(folder_path.parent.joinpath(f"Photos from {m.group(1)}"))
+                new_path = folder_path.parent.joinpath(f"Photos from {m.group(1)}")
+                renamed_folders.append((folder_path, new_path))
+                folder_path.rename(new_path)
+
+    print(f"renamed folders: {renamed_folders}")
 
     processed_photos_path = target_archive_download_path.joinpath("export")
     try:
