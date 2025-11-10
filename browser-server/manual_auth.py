@@ -8,6 +8,7 @@ import tempfile
 from playwright.async_api import async_playwright
 
 downloads_path = pathlib.Path("/app/browser-downloads")
+default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
 
 
 async def main():
@@ -51,6 +52,7 @@ async def main():
             viewport={"width": 1280, "height": 1024},
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
         )
+        page.set_default_timeout(default_timeout)
         page.on("close", handle_manual_auth_close)
         try:
             await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
@@ -72,8 +74,7 @@ async def main():
                     await page.locator(f"button#identifierNext").or_(
                         page.locator(f"div#identifierNext")
                     ).click()
-                    await page.wait_for_timeout(5000)
-                    if not await page.get_by_text("Try again", exact=True).is_hidden():
+                    if not await page.get_by_text("Try again", exact=True).is_hidden(timeout=default_timeout):
                         raise Exception("failed to enter email")
                     password = os.getenv("USER_P")
                     await page.type(
@@ -81,7 +82,7 @@ async def main():
                         text=password,
                         delay=random.randint(11, 49),
                     )
-                    await page.wait_for_timeout(1537)
+                    await page.wait_for_timeout(random.randint(1523, 1997))
                     await page.locator(f"button#passwordNext").or_(
                         page.locator(f"div#passwordNext")
                     ).click()
