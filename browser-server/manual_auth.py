@@ -76,6 +76,9 @@ async def main():
                     ).click()
                     if not await page.get_by_text("Try again", exact=True).is_hidden(timeout=default_timeout):
                         raise Exception("failed to enter email")
+
+                    await page.wait_for_selector("input[type=password]", timeout=default_timeout)
+                    await page.focus(selector="input[type=password]")
                     password = os.getenv("USER_P")
                     await page.type(
                         selector="input[type=password]",
