@@ -90,7 +90,7 @@ async def main():
                     "https://accounts.google.com/v3/signin/challenge"
                 ):
                     # await page.screenshot(path=downloads_path.joinpath("2fa_page.jpg")
-                    await page.locator(f'div[data-challengetype="39"]').click()
+                    await page.locator(f'div[data-challengetype="39"]').click(timeout=default_timeout)
                     await page.wait_for_url(
                         "https://takeout.google.com/settings/takeout/custom/photos"
                     )
