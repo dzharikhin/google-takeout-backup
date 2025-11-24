@@ -84,6 +84,7 @@ async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2
 
 
 async def main():
+    print(f"{TIMEOUT_MILLIS=}")
     if not auth_json_path:
         raise Exception(f"{auth_json_path} is required")
     if not os.getenv("ENCODED_PASS"):
