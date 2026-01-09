@@ -27,7 +27,7 @@ async def main():
 
     async with async_playwright() as playwright:
         headless_mode = os.getenv("HEADLESS_MODE", "headed")
-        print(f"executing script with {headless_mode=}")
+        print(f"executing script with {headless_mode=}, {default_timeout=}")
         browser = await playwright.chromium.launch(
             args=sum(
                 [
