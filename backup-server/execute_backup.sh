@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 docker-compose run --rm --remove-orphans backup > /tmp/gtb.out 2>&1
+docker-compose down --volumes
 if [ $? -ne 0 ]; then
   echo "Backup run has failed"
   cat /tmp/gtb.out
