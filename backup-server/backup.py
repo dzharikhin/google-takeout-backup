@@ -63,7 +63,7 @@ async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2
     tries = 0
     while tries < max_tries:
         if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-            await page.locator("form li>div").first.click()
+            await page.locator("form").or_(page.locator("ul")).locator("li>div").first.click()
         elif page.url.startswith("https://gds.google.com/web/homeaddress"):
             element_by_exact_text = page.get_by_text(f"{text_labels["skip"]}")
             await element_by_exact_text.click()
