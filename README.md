@@ -52,3 +52,8 @@ You can run browser server on a dedicated node if it is connected to backup serv
 6. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
    > there is [skeleton](./backup-server/execute_backup.sh) for scheduling execution  
    > but it requires local customization to be used
+7. schedule command to reset browser from time to time(once a month is good enough)
+    ```shell
+    docker compose restart browser-virtual
+    ```
+   from `./browser-server` location 
