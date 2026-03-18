@@ -76,6 +76,7 @@ services:
       HEADLESS_MODE: ${HEADLESS_MODE:-virtual} # headed, headless
       USER_E: ${USER_E}
       USER_P: ${USER_P}
+      TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
     volumes:
       - ./manual_auth.py:/app/manual_auth.py:ro
     profiles: !override
