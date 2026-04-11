@@ -10,6 +10,7 @@ services:
       - ./.auth_encoded:/app/.auth_encoded
       - ./downloads:/app/downloads
       - ./photos:/app/photos
+      - ./utils:/app/utils
     entrypoint: [ "/app/backup-entry.sh" ]
     working_dir: /app
     command: [ "backup.py" ]
