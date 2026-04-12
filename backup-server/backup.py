@@ -280,7 +280,7 @@ async def main():
     try:
         subprocess.run(
             [
-                "gpth",
+                "/app/utils/gpth",
                 "--copy",
                 "-i",
                 unpacked_root_dir,
