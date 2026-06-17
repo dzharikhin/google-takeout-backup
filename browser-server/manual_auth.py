@@ -64,12 +64,9 @@ async def main():
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
                     email = os.getenv("USER_E")
-                    await page.focus(selector="input[type=email]")
-                    await page.type(
-                        selector="input[type=email]",
-                        text=email,
-                        delay=random.randint(11, 49),
-                    )
+                    email_field = page.locator("input[type=email]").or_(page.locator("input#identifierId"))
+                    await email_field.focus()
+                    await email_field.press_sequentially(email, delay=random.randint(11, 49))
                     await page.wait_for_timeout(1666)
                     await page.locator(f"button#identifierNext").or_(
                         page.locator(f"div#identifierNext")
