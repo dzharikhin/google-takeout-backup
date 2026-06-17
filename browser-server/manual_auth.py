@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import os
 import pathlib
 import random
@@ -9,6 +10,10 @@ from playwright.async_api import async_playwright
 
 downloads_path = pathlib.Path("/app/browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
+text_labels_source = pathlib.Path(f"keys_{os.getenv("GOOGLE_LANG", "RU")}.csv")
+
+with text_labels_source.open(mode="rt") as labels_data:
+    text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
 
 
 async def main():
@@ -71,8 +76,6 @@ async def main():
                     await page.locator(f"button#identifierNext").or_(
                         page.locator(f"div#identifierNext")
                     ).click()
-                    if not await page.get_by_text("Try again", exact=True).is_hidden(timeout=default_timeout):
-                        raise Exception("failed to enter email")
 
                     await page.wait_for_selector("input[type=password]", timeout=default_timeout)
                     await page.focus(selector="input[type=password]")
@@ -85,7 +88,12 @@ async def main():
                     await page.wait_for_timeout(random.randint(1523, 1997))
                     await page.locator(f"button#passwordNext").or_(
                         page.locator(f"div#passwordNext")
-                    ).click()
+                    ).click(timeout=default_timeout)
+                if page.url.startswith("https://accounts.google.com/v3/signin/challenge/skotp"):
+                    await page.get_by_text(text_labels["try.another.factor"]).click()
+                    await page.wait_for_url(
+                        "https://accounts.google.com/v3/signin/challenge"
+                    )
                 if page.url.startswith(
                     "https://accounts.google.com/v3/signin/challenge"
                 ):
@@ -98,8 +106,8 @@ async def main():
         except Exception:
             try:
                 if page and not page.is_closed():
-                    downloads_path.joinpath(f"error_url").write_text(page.url)
-                    downloads_path.joinpath(f"error_html").write_text(
+                    downloads_path.joinpath(f"error_url.txt").write_text(page.url)
+                    downloads_path.joinpath(f"error_html.html").write_text(
                         await page.content()
                     )
                     await page.screenshot(

@@ -79,6 +79,7 @@ services:
       TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
     volumes:
       - ./manual_auth.py:/app/manual_auth.py:ro
+      - ./../keys_RU.csv:/app/keys_RU.csv:ro
     profiles: !override
       - "manual"
 

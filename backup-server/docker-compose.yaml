@@ -5,7 +5,7 @@ services:
     tty: true
     volumes:
       - ./backup-entry.sh:/app/backup-entry.sh:ro
-      - ./keys_RU.csv:/app/keys_RU.csv:ro
+      - ./../keys_RU.csv:/app/keys_RU.csv:ro
       - ./backup.py:/app/backup.py:ro
       - ./.auth_encoded:/app/.auth_encoded
       - ./downloads:/app/downloads
