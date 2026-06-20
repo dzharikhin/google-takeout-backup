@@ -1,15 +1,9 @@
 services:
   proxy:
+    build:
+      context: ..
+      dockerfile: browser-server/Dockerfile.proxy
     restart: always
-    image: python:3.13-alpine
-    entrypoint: [ "/app/proxy-entrypoint.sh" ]
-    command: [ "/app/webs.py" ]
-    tty: true
-    init: true
-    stdin_open: true
-    volumes:
-      - ./proxy-entrypoint.sh:/app/proxy-entrypoint.sh:ro
-      - ./webs.py:/app/webs.py:ro
     ports:
       - "${PROXY_PUBLIC_PORT}:8080"
     environment:
@@ -67,23 +61,19 @@ services:
       - "headed"
 
   browser-manual:
-    extends: browser-headed
-    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+    build:
+      context: ..
+      dockerfile: browser-server/Dockerfile.manual-auth
     restart: no
-    entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && if [ \"$${HEADLESS_MODE}\" = \"virtual\" ]; then echo 'running on virtual display' && cd /app && exec xvfb-run -a --error-file=/app/browser-downloads/xvfb-manual.log python /app/manual_auth.py; else echo 'running on real display' && cd /app && exec python /app/manual_auth.py; fi" ]
     environment:
-      HEADLESS_MODE: ${HEADLESS_MODE:-virtual} # headed, headless
+      HEADLESS_MODE: ${HEADLESS_MODE:-virtual}
       USER_E: ${USER_E}
       USER_P: ${USER_P}
       TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
       GOOGLE_LANG: EN
     volumes:
-      - ./manual_auth.py:/app/manual_auth.py:ro
-      - ./../keys_RU.csv:/app/keys_RU.csv:ro
-      - ./../keys_EN.csv:/app/keys_EN.csv:ro
-    profiles: !override
-      - "manual"
+      - ./browser-downloads/:/app/browser-downloads
+    profiles: ["manual"]
 
 networks:
   secure_net:

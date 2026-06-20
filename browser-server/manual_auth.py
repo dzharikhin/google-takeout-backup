@@ -6,11 +6,11 @@ import random
 import sys
 import tempfile
 
-from playwright.async_api import async_playwright
+from invisible_playwright.async_api import InvisiblePlaywright
 
 downloads_path = pathlib.Path("/app/browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
-text_labels_source = pathlib.Path(f"keys_{os.getenv("GOOGLE_LANG", "RU")}.csv")
+text_labels_source = pathlib.Path(f"keys_{os.getenv('GOOGLE_LANG', 'RU')}.csv")
 
 with text_labels_source.open(mode="rt") as labels_data:
     text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
@@ -30,42 +30,16 @@ async def main():
             print()
             manual_auth_wait.pop()
 
-    async with async_playwright() as playwright:
-        headless_mode = os.getenv("HEADLESS_MODE", "headed")
-        print(f"executing script with {headless_mode=}, {default_timeout=}")
-        browser = await playwright.chromium.launch(
-            args=sum(
-                [
-                    [
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-web-security",
-                        "--disable-infobars",
-                        "--disable-extensions",
-                        "--start-maximized",
-                        "--disable-gpu",
-                    ]
-                ],
-                ["--ozone-platform=wayland"] if headless_mode == "headed" else [],
-            ),
-            ignore_default_args=[
-                "--disable-component-extensions-with-background-pages"
-            ],
-            headless=bool(headless_mode.lower() == "headless".lower()),
-        )
-        page = await browser.new_page(
-            viewport={"width": 1280, "height": 1024},
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        )
+    headless_mode = os.getenv("HEADLESS_MODE", "headed")
+    headless = bool(headless_mode.lower() == "headless")
+    print(f"{headless_mode=}")
+    async with InvisiblePlaywright(headless=headless) as browser:
+        page = await browser.new_page()
         page.set_default_timeout(default_timeout)
         page.on("close", handle_manual_auth_close)
         try:
             await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
-            if headless_mode == "headed":
-                print(
-                    f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successfull"
-                )
-            else:
+            if headless:
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
                     email = os.getenv("USER_E")
@@ -103,6 +77,8 @@ async def main():
                         "https://takeout.google.com/settings/takeout/custom/photos"
                     )
                     await handle_manual_auth_close(page)
+            else:
+                print(f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful")
         except Exception:
             try:
                 if page and not page.is_closed():

@@ -1,0 +1,25 @@
+[project]
+name = "google-takeout-backup"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+proxy = [
+    "eciespy",
+    "eth-keys",
+    "coincurve",
+    "websockets",
+]
+manual-auth = [
+    "invisible-playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+]
+backup = [
+    "playwright>=1.60.0",
+]
+dev = [
+    "playwright>=1.60.0",
+    "python-statemachine>=3.2.0",
+    "transitions>=0.9.3",
+]
