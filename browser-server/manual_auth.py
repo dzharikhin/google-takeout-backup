@@ -13,13 +13,11 @@ from transitions.experimental.utils import with_model_definitions, add_transitio
 from transitions.extensions.asyncio import AsyncMachine
 
 logging.basicConfig(level=logging.INFO)
-# Set transitions' log level to INFO; DEBUG messages will be omitted
-logging.getLogger('transitions').setLevel(logging.INFO)
 
 def ref(func):
     """IDE-navigable method reference. Extracts __name__ for transitions library."""
     return func.__name__
-from playwright.async_api import expect, Locator
+from playwright.async_api import expect, Locator, Page
 
 downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
@@ -38,9 +36,13 @@ class LoginState(str, Enum):
 class GoogleLoginModel:
     state: LoginState = LoginState.start
 
-    def __init__(self, page, timeout):
+    def __init__(self, page: Page, timeout):
         self.page = page
         self.timeout = timeout
+
+    async def is_refresh_complete(self):
+        progress_bar = self.page.locator('[role="progressbar"]')
+        await expect(progress_bar).to_have_attribute("aria-hidden", "true", timeout=self.timeout)
 
     @property
     def email_input(self) -> Locator:
@@ -101,6 +103,7 @@ class GoogleLoginModel:
     async def wait_for_mfa_confirmation(self): ...
 
     async def is_skotp(self):
+        await self.is_refresh_complete()
         return await self.default_mfa_input.is_visible(timeout=self.timeout)
 
     def is_challenge_url(self):
@@ -138,6 +141,7 @@ class GoogleLoginModel:
         ).click(timeout=self.timeout)
 
     async def verify_skotp_and_click_try_another_way(self):
+        await self.is_refresh_complete()
         await expect(self.default_mfa_input).to_be_visible(timeout=self.timeout)
         button_panel = self.page.locator("[data-secondary-action-label]")
         await expect(button_panel).to_be_visible(timeout=self.timeout)
@@ -145,10 +149,12 @@ class GoogleLoginModel:
         await self.page.get_by_text(target_button_text).click(timeout=self.timeout)
 
     async def verify_challenge_and_select_acceptable_mfa(self):
+        await self.is_refresh_complete()
         challenge_select = self.challenge_option
         await expect(challenge_select).to_be_visible(timeout=self.timeout)
 
     async def choose_acceptable_mfa(self):
+        await self.is_refresh_complete()
         challenge_button = self.challenge_option
         await expect(challenge_button).to_be_visible(timeout=self.timeout)
         await challenge_button.click(timeout=self.timeout)
