@@ -14,12 +14,13 @@ proxy = [
 ]
 manual-auth = [
     "invisible-playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    "transitions>=0.9.3",
 ]
 backup = [
     "playwright>=1.60.0",
+    "transitions>=0.9.3",
 ]
 dev = [
     "playwright>=1.60.0",
     "python-statemachine>=3.2.0",
-    "transitions>=0.9.3",
 ]
