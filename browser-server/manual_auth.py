@@ -3,17 +3,17 @@ import logging
 import os
 import pathlib
 import random
-import re
 import sys
 import tempfile
-from enum import Enum
 
 from invisible_playwright.async_api import InvisiblePlaywright
-from transitions.experimental.utils import with_model_definitions, add_transitions, transition
-from transitions.extensions.asyncio import AsyncMachine
 from playwright.async_api import expect, Locator, Page
+from transitions.experimental.utils import with_model_definitions, add_transitions, transition
+from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
 logging.basicConfig(level=logging.INFO)
+
+TAKEOUT_URL = "https://takeout.google.com/settings/takeout/custom/photos"
 
 def name_enricher(outer):
     def _wrapper(func):
@@ -29,24 +29,26 @@ def ref(func):
 downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
 
+class States:
+    start = AsyncState(name="start")
+    email_entry = AsyncState(name="email_entry", on_enter="fill_email_and_proceed")
+    password_entry = AsyncState(name="password_entry", on_enter="fill_password_and_proceed")
+    challenge_skotp = AsyncState(name="challenge_skotp")
+    other_challenge_select = AsyncState(name="other_challenge_select")
+    challenge_confirm = AsyncState(name="challenge_confirm", on_enter="handle_challenge_confirm")
+    offer_to_restore = AsyncState(name="offer_to_restore")
+    auth_success = AsyncState(name="auth_success", final=True)
 
-class LoginState(str, Enum):
-    start = "start"
-    email_entry = "email_entry"
-    password_entry = "password_entry"
-    challenge_skotp = "challenge_skotp"
-    challenge_select = "challenge_select"
-    challenge_confirm = "challenge_confirm"
-    offer_to_restore = "offer_to_restore"
-    auth_success = "auth_success"
+    @classmethod
+    def as_list(cls):
+        return [v for k, v in vars(cls).items() if isinstance(v, AsyncState)]
 
 
 class GoogleLoginModel:
-    state: LoginState = LoginState.start
-
     def __init__(self, page: Page, timeout):
         self.page = page
         self.timeout = timeout
+        self.state = "start"
 
     async def is_refresh_complete(self):
         progress_bar = self.page.locator('[role="progressbar"]')
@@ -68,11 +70,18 @@ class GoogleLoginModel:
         await self.is_refresh_complete()
         return await self.default_mfa_input.is_visible(timeout=self.timeout)
 
-    def is_challenge_url(self):
-        return self.page.url.startswith("https://accounts.google.com/v3/signin/challenge")
+    async def is_mfa_selection(self):
+        await self.is_refresh_complete()
+        await self.challenge_option.is_visible(timeout=self.timeout)
 
-    def is_takeout_url(self):
-        return self.page.url.startswith("https://takeout.google.com")
+    async def is_restore(self):
+        await self.is_refresh_complete()
+        await self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]').is_visible(timeout=self.timeout)
+
+
+    async def is_takeout_url(self):
+        await self.page.wait_for_url(TAKEOUT_URL, timeout=self.timeout)
+        return self.page.url.startswith(TAKEOUT_URL)
 
     async def verify_signin(self):
         email_input = self.email_input
@@ -102,71 +111,88 @@ class GoogleLoginModel:
             self.page.locator("div#passwordNext")
         ).click(timeout=self.timeout)
 
-    async def verify_skotp_and_click_try_another_way(self):
-        await self.is_refresh_complete()
-        await expect(self.default_mfa_input).to_be_visible(timeout=self.timeout)
+    async def click_try_another_mfa(self):
         button_panel = self.page.locator("[data-secondary-action-label]")
         await expect(button_panel).to_be_visible(timeout=self.timeout)
         target_button_text = await button_panel.get_attribute("data-secondary-action-label")
         await self.page.get_by_text(target_button_text).click(timeout=self.timeout)
 
-    async def verify_challenge_and_select_acceptable_mfa(self):
-        await self.is_refresh_complete()
-        challenge_select = self.challenge_option
-        await expect(challenge_select).to_be_visible(timeout=self.timeout)
-
-    async def choose_acceptable_mfa(self):
-        await self.is_refresh_complete()
+    async def click_acceptable_mfa(self):
         challenge_button = self.challenge_option
-        await expect(challenge_button).to_be_visible(timeout=self.timeout)
         await challenge_button.click(timeout=self.timeout)
 
-    async def verify_takeout(self):
-        await expect(self.page).to_have_url(re.compile(r"takeout\.google\.com"))
+    async def click_skip_restore(self):
+        proceed_button = self.page.locator('[href^="https://takeout.google.com/settings/takeout/custom/photos"]')
+        await proceed_button.click(timeout=self.timeout)
 
-    async def on_enter_auth_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_dir = pathlib.Path(tmp)
-            file_path = tmp_dir.joinpath("file.json")
-            await self.page.context.storage_state(path=file_path)
-            print()
-            print(file_path.read_text())
-            print()
-            manual_auth_wait.pop()
+    async def handle_challenge_confirm(self):
+        downloads_path.joinpath(f"challenge_confirmation.html").write_text(
+            await self.page.content()
+        )
+        text = await self.page.locator("body").inner_text()
+        print(text)
+        await asyncio.wait({
+            asyncio.create_task(self.is_restore()),
+            asyncio.create_task(self.is_takeout_url())
+        }, return_when=asyncio.FIRST_COMPLETED)
+        await self.confirm_mfa()
+
+    # async def handle_auth_success(self):
+    #     with tempfile.TemporaryDirectory() as tmp:
+    #         tmp_dir = pathlib.Path(tmp)
+    #         file_path = tmp_dir.joinpath("file.json")
+    #         await self.page.context.storage_state(path=file_path)
+    #         print()
+    #         print(file_path.read_text())
+    #         print()
+    #         manual_auth_wait.pop()
 
     @name_enricher(add_transitions(transition(
-        source=LoginState.challenge_select,
-        dest=LoginState.auth_success,
-        before=ref(choose_acceptable_mfa),
+        source=States.offer_to_restore,
+        dest=States.auth_success,
+        before=ref(click_skip_restore),
     )))
-    async def wait_for_mfa_confirmation(self): ...
+    async def skip_restoration(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=States.challenge_confirm, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
+        transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
+    ))
+    async def confirm_mfa(self): ...
 
     @name_enricher(add_transitions(transition(
-        source=LoginState.challenge_skotp,
-        dest=LoginState.challenge_select,
-        before=ref(verify_skotp_and_click_try_another_way),
-        after=ref(wait_for_mfa_confirmation),
+        source=States.other_challenge_select,
+        dest=States.challenge_confirm,
+        before=ref(click_acceptable_mfa),
+    )))
+    async def select_acceptable_mfa(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=States.challenge_skotp,
+        dest=States.other_challenge_select,
+        before=ref(click_try_another_mfa),
+        after=ref(select_acceptable_mfa),
     )))
     async def skip_skotp(self): ...
 
     @name_enricher(add_transitions(
-        transition(source=LoginState.password_entry, dest=LoginState.challenge_skotp, conditions=ref(is_skotp), before=ref(verify_skotp_and_click_try_another_way), after=ref(skip_skotp)),
-        transition(source=LoginState.password_entry, dest=LoginState.challenge_select, conditions=ref(is_challenge_url), before=ref(verify_challenge_and_select_acceptable_mfa), after=ref(wait_for_mfa_confirmation)),
-        transition(source=LoginState.password_entry, dest=LoginState.auth_success, conditions=ref(is_takeout_url)),
+        transition(source=States.password_entry, dest=States.challenge_skotp, conditions=ref(is_skotp), after=ref(skip_skotp)),
+        transition(source=States.password_entry, dest=States.other_challenge_select, conditions=ref(is_mfa_selection), after=ref(select_acceptable_mfa)),
+        transition(source=States.password_entry, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
+        transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def submit_password(self): ...
 
     @name_enricher(add_transitions(transition(
-        source=LoginState.email_entry,
-        dest=LoginState.password_entry,
-        before=ref(fill_email_and_proceed),
+        source=States.email_entry,
+        dest=States.password_entry,
         after=ref(submit_password),
     )))
     async def submit_email(self): ...
 
     @name_enricher(add_transitions(transition(
-        source=LoginState.start,
-        dest=LoginState.email_entry,
+        source=States.start,
+        dest=States.email_entry,
         before=ref(verify_signin),
         after=ref(submit_email),
     )))
@@ -192,28 +218,30 @@ async def main():
 
         async def handle_manual_auth_close(page):
             global manual_auth_wait
-            with tempfile.TemporaryDirectory() as tmp:
-                tmp_dir = pathlib.Path(tmp)
-                file_path = tmp_dir.joinpath("file.json")
-                await page.context.storage_state(path=file_path)
-                print()
-                print(file_path.read_text())
-                print()
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_dir = pathlib.Path(tmp)
+                    file_path = tmp_dir.joinpath("file.json")
+                    await page.context.storage_state(path=file_path)
+                    print()
+                    print(file_path.read_text())
+                    print()
+            finally:
                 manual_auth_wait.pop()
 
-        page.on("close", handle_manual_auth_close)
-
         try:
-            await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
-            if True:
+            await page.goto(TAKEOUT_URL)
+            if headless:
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
                     model = GoogleLoginModel(page=page, timeout=default_timeout)
-                    GoogleLoginMachine(model, states=LoginState, initial=LoginState.start, queued=True)
+                    GoogleLoginMachine(model, states=States.as_list(), initial=States.start, queued=True)
                     await model.sign_in()
-                elif page.url.startswith("https://takeout.google.com"):
+                    print("login script is finished")
+                if page.url.startswith(TAKEOUT_URL):
                     await handle_manual_auth_close(page)
             else:
+                page.on("close", handle_manual_auth_close)
                 print(f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful")
         except Exception:
             try:
