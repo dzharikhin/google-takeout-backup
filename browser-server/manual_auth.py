@@ -11,13 +11,20 @@ from enum import Enum
 from invisible_playwright.async_api import InvisiblePlaywright
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 from transitions.extensions.asyncio import AsyncMachine
+from playwright.async_api import expect, Locator, Page
 
 logging.basicConfig(level=logging.INFO)
 
+def name_enricher(outer):
+    def _wrapper(func):
+        original_name = func.__name__
+        result = outer(func)
+        result.original_name = original_name
+        return result
+    return _wrapper
+
 def ref(func):
-    """IDE-navigable method reference. Extracts __name__ for transitions library."""
-    return func.__name__
-from playwright.async_api import expect, Locator, Page
+    return getattr(func, 'original_name', None) or func.__name__
 
 downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
@@ -27,9 +34,10 @@ class LoginState(str, Enum):
     start = "start"
     email_entry = "email_entry"
     password_entry = "password_entry"
-    password_submitted = "password_submitted"
     challenge_skotp = "challenge_skotp"
     challenge_select = "challenge_select"
+    challenge_confirm = "challenge_confirm"
+    offer_to_restore = "offer_to_restore"
     auth_success = "auth_success"
 
 
@@ -55,52 +63,6 @@ class GoogleLoginModel:
     @property
     def default_mfa_input(self) -> Locator:
         return self.page.locator("input#securityKeyOtpInputId")
-
-    @add_transitions(transition(
-        source=LoginState.start,
-        dest=LoginState.email_entry,
-        before="verify_signin",
-        after="submit_email",
-    ))
-    async def sign_in(self): ...
-
-    @add_transitions(transition(
-        source=LoginState.email_entry,
-        dest=LoginState.password_entry,
-        before="fill_email_and_proceed",
-        after="submit_password",
-    ))
-    async def submit_email(self): ...
-
-    @add_transitions(transition(
-        source=LoginState.password_entry,
-        dest=LoginState.password_submitted,
-        before="fill_password_and_proceed",
-        after="route_after_password",
-    ))
-    async def submit_password(self): ...
-
-    @add_transitions(
-        transition(source=LoginState.password_submitted, dest=LoginState.challenge_skotp, conditions="is_skotp", before="verify_skotp_and_click_try_another_way", after="skip_skotp"),
-        transition(source=LoginState.password_submitted, dest=LoginState.challenge_select, conditions="is_challenge_url", before="verify_challenge_and_select_acceptable_mfa", after="select_google_prompt"),
-        transition(source=LoginState.password_submitted, dest=LoginState.auth_success, conditions="is_takeout_url"),
-    )
-    async def route_after_password(self): ...
-
-    @add_transitions(transition(
-        source=LoginState.challenge_skotp,
-        dest=LoginState.challenge_select,
-        before="verify_skotp_and_click_try_another_way",
-        after="wait_for_mfa_confirmation",
-    ))
-    async def skip_skotp(self): ...
-
-    @add_transitions(transition(
-        source=LoginState.challenge_select,
-        dest=LoginState.auth_success,
-        before="choose_acceptable_mfa",
-    ))
-    async def wait_for_mfa_confirmation(self): ...
 
     async def is_skotp(self):
         await self.is_refresh_complete()
@@ -171,6 +133,44 @@ class GoogleLoginModel:
             print(file_path.read_text())
             print()
             manual_auth_wait.pop()
+
+    @name_enricher(add_transitions(transition(
+        source=LoginState.challenge_select,
+        dest=LoginState.auth_success,
+        before=ref(choose_acceptable_mfa),
+    )))
+    async def wait_for_mfa_confirmation(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=LoginState.challenge_skotp,
+        dest=LoginState.challenge_select,
+        before=ref(verify_skotp_and_click_try_another_way),
+        after=ref(wait_for_mfa_confirmation),
+    )))
+    async def skip_skotp(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=LoginState.password_entry, dest=LoginState.challenge_skotp, conditions=ref(is_skotp), before=ref(verify_skotp_and_click_try_another_way), after=ref(skip_skotp)),
+        transition(source=LoginState.password_entry, dest=LoginState.challenge_select, conditions=ref(is_challenge_url), before=ref(verify_challenge_and_select_acceptable_mfa), after=ref(wait_for_mfa_confirmation)),
+        transition(source=LoginState.password_entry, dest=LoginState.auth_success, conditions=ref(is_takeout_url)),
+    ))
+    async def submit_password(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=LoginState.email_entry,
+        dest=LoginState.password_entry,
+        before=ref(fill_email_and_proceed),
+        after=ref(submit_password),
+    )))
+    async def submit_email(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=LoginState.start,
+        dest=LoginState.email_entry,
+        before=ref(verify_signin),
+        after=ref(submit_email),
+    )))
+    async def sign_in(self): ...
 
 
 @with_model_definitions
