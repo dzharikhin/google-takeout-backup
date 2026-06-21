@@ -137,16 +137,6 @@ class GoogleLoginModel:
         }, return_when=asyncio.FIRST_COMPLETED)
         await self.confirm_mfa()
 
-    # async def handle_auth_success(self):
-    #     with tempfile.TemporaryDirectory() as tmp:
-    #         tmp_dir = pathlib.Path(tmp)
-    #         file_path = tmp_dir.joinpath("file.json")
-    #         await self.page.context.storage_state(path=file_path)
-    #         print()
-    #         print(file_path.read_text())
-    #         print()
-    #         manual_auth_wait.pop()
-
     @name_enricher(add_transitions(transition(
         source=States.offer_to_restore,
         dest=States.auth_success,
