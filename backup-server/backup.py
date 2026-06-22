@@ -9,7 +9,9 @@ import subprocess
 import sys
 import zipfile
 
-from playwright.async_api import async_playwright, TimeoutError, Error
+from playwright.async_api import async_playwright, Error
+from transitions.experimental.utils import with_model_definitions, add_transitions, transition
+from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
 TAKEOUT_BASEURL = "https://takeout.google.com/"
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
@@ -17,70 +19,238 @@ BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
 )
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
 
-
-class EarlyReturn(Exception):
-    pass
-
-
 auth_json_path = pathlib.Path(".auth_encoded")
 
 downloads_path = pathlib.Path("downloads")
 backup_path = pathlib.Path("photos")
 timestamp_path = backup_path.joinpath(".timestamp")
-text_labels_source = pathlib.Path(f"keys_{os.getenv("GOOGLE_LANG", "RU")}.csv")
+text_labels_source = pathlib.Path(f"keys_{os.getenv('GOOGLE_LANG', 'RU')}.csv")
 
 with text_labels_source.open(mode="rt") as labels_data:
     text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
 
 
-async def filter_most_recent_archive(
-    page, ready_archive_links, last_snapshot_timestamp: datetime.datetime
-):
-    for ready_archive_link in ready_archive_links:
-        await page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
-        await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}{ready_archive_link}")
-        report_download_button = page.locator(
-            f'a[aria-label="{text_labels["report.download"]}"]'
-        )
-        async with page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-            await report_download_button.click()
-            await handle_reauth(page)
-        download_meta = await download_info.value
-        current_archive_timestamp = parse_takeout_timestamp(
-            download_meta.suggested_filename.split("-", 3)[1]
-        )
-        await download_meta.cancel()
-        if (
-            not last_snapshot_timestamp
-            or current_archive_timestamp > last_snapshot_timestamp
-        ):
-            return ready_archive_link, current_archive_timestamp
+def name_enricher(outer):
+    def _wrapper(func):
+        original_name = func.__name__
+        result = outer(func)
+        result.original_name = original_name
+        return result
 
-    return None, None
+    return _wrapper
 
 
-async def handle_reauth(page, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2, max_tries=3):
-    tries = 0
-    while tries < max_tries:
-        if page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-            await page.locator("form").or_(page.locator("ul")).locator("li>div").first.click()
-        elif page.url.startswith("https://gds.google.com/web/homeaddress"):
-            element_by_exact_text = page.get_by_text(f"{text_labels["skip"]}")
-            await element_by_exact_text.click()
-        await asyncio.sleep(timeout_millis / 1000 / max_tries)
-        if page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
-            await page.fill(
-                selector="input[type=password]", value=os.getenv("ENCODED_PASS")
-            )
-            await page.locator(f"button#passwordNext").or_(
-                page.locator(f"div#passwordNext")
-            ).click()
-            if target_url:
-                await page.wait_for_url(
-                    lambda u: u.startswith(target_url), timeout=timeout_millis
+def ref(func):
+    return getattr(func, 'original_name', None) or func.__name__
+
+
+class TakeoutStates:
+    start = AsyncState(name="start")
+    on_manage = AsyncState(name="on_manage", on_enter="handle_manage_page")
+    export_in_progress = AsyncState(name="export_in_progress", final=True)
+    backup_fresh = AsyncState(name="backup_fresh", final=True)
+    selecting_archive = AsyncState(name="selecting_archive", on_enter="find_most_recent_archive")
+    requesting_archive = AsyncState(name="requesting_archive", on_enter="request_new_archive", final=True)
+    on_archive = AsyncState(name="on_archive", on_enter="handle_archive_page")
+    downloading = AsyncState(name="downloading", on_enter="download_archive_parts", final=True)
+    complete = AsyncState(name="complete", final=True)
+
+    @classmethod
+    def as_list(cls):
+        return [v for k, v in vars(cls).items() if isinstance(v, AsyncState)]
+
+
+class TakeoutModel:
+    def __init__(self, page, last_snapshot_timestamp):
+        self.page = page
+        self.timeout = TIMEOUT_MILLIS
+        self.last_snapshot_timestamp = last_snapshot_timestamp
+        self.target_archive = None
+        self.target_archive_timestamp = None
+        self.target_archive_download_path = None
+        self.ready_archive_links = None
+        self.archive_parts = None
+        self.state = "start"
+
+    async def is_auth_required(self):
+        return self.page.url.startswith("https://accounts.google.com/v3/signin")
+
+    async def is_export_running(self):
+        export_in_progress = self.page.locator(f"text={text_labels['decline.export']}")
+        return not await export_in_progress.is_hidden()
+
+    async def is_backup_fresh(self):
+        if not self.last_snapshot_timestamp:
+            return False
+        now = datetime.datetime.now()
+        return abs(now - self.last_snapshot_timestamp) < BACKUP_FRESHNESS_INTERVAL
+
+    async def has_ready_archives(self):
+        ready_archive_links = await self.page.locator(
+            "a",
+            has=self.page.locator("p", has_text=f"{text_labels['export.ready.label']}"),
+        ).all()
+        return len(ready_archive_links) > 0
+
+    async def has_newer_archive(self):
+        return self.target_archive is not None
+
+    async def is_download_dialog(self):
+        return not await self.page.locator(f'div[role="dialog"]').is_hidden()
+
+    async def navigate_to_manage(self):
+        await self.page.goto(f"{TAKEOUT_BASEURL}manage")
+        if await self.is_auth_required():
+            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}manage")
+
+    async def handle_reauth(self, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2, max_tries=3):
+        tries = 0
+        while tries < max_tries:
+            if self.page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
+                await self.page.locator("form").or_(self.page.locator("ul")).locator("li>div").first.click()
+            elif self.page.url.startswith("https://gds.google.com/web/homeaddress"):
+                element_by_exact_text = self.page.get_by_text(f"{text_labels['skip']}")
+                await element_by_exact_text.click()
+            await asyncio.sleep(timeout_millis / 1000 / max_tries)
+            if self.page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
+                await self.page.fill(
+                    selector="input[type=password]", value=os.getenv("ENCODED_PASS")
                 )
-            return
-        tries += 1
+                await self.page.locator(f"button#passwordNext").or_(
+                    self.page.locator(f"div#passwordNext")
+                ).click()
+                if target_url:
+                    await self.page.wait_for_url(
+                        lambda u: u.startswith(target_url), timeout=timeout_millis
+                    )
+                return
+            tries += 1
+
+    async def collect_ready_archive_links(self):
+        ready_archive_links = await self.page.locator(
+            "a",
+            has=self.page.locator("p", has_text=f"{text_labels['export.ready.label']}"),
+        ).all()
+        self.ready_archive_links = [
+            await link.get_attribute("href") for link in ready_archive_links
+        ]
+
+    async def find_most_recent_archive(self):
+        for ready_archive_link in self.ready_archive_links:
+            await self.page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
+            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{ready_archive_link}")
+            report_download_button = self.page.locator(
+                f'a[aria-label="{text_labels["report.download"]}"]'
+            )
+            async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
+                await report_download_button.click()
+                await self.handle_reauth()
+            download_meta = await download_info.value
+            current_archive_timestamp = parse_takeout_timestamp(
+                download_meta.suggested_filename.split("-", 3)[1]
+            )
+            await download_meta.cancel()
+            if (
+                not self.last_snapshot_timestamp
+                or current_archive_timestamp > self.last_snapshot_timestamp
+            ):
+                self.target_archive = ready_archive_link
+                self.target_archive_timestamp = current_archive_timestamp
+                return
+
+    async def clean_downloads_dir(self):
+        for f in downloads_path.iterdir():
+            if f.is_file():
+                f.unlink()
+            elif f.is_dir():
+                shutil.rmtree(f)
+        self.target_archive_download_path = downloads_path.joinpath(
+            self.target_archive.split("/")[-1]
+        )
+        self.target_archive_download_path.mkdir()
+
+    async def navigate_to_archive(self):
+        await self.page.goto(f"{TAKEOUT_BASEURL}{self.target_archive}")
+        await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{self.target_archive}")
+        self.archive_parts = await self.page.locator(
+            f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
+        ).all()
+
+    async def handle_archive_page(self):
+        await self.navigate_to_archive()
+
+    async def download_archive_parts(self):
+        for i, archive_part in enumerate(self.archive_parts, 1):
+            async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
+                await archive_part.click()
+                await self.handle_reauth()
+            download_meta = await download_info.value
+            for try_n in range(1, 4):
+                try:
+                    await download_meta.save_as(
+                        self.target_archive_download_path.joinpath(
+                            download_meta.suggested_filename
+                        )
+                    )
+                    break
+                except Error:
+                    if try_n >= 3:
+                        raise
+                    print(f"retrying download {i} after {try_n}")
+            await download_meta.delete()
+            print(f"downloaded {i}/{len(self.archive_parts)} parts")
+
+    async def request_new_archive(self):
+        await self.page.goto(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
+        element_by_exact_text = self.page.get_by_text(f"{text_labels['proceed']}")
+        await element_by_exact_text.click()
+        element_by_exact_text = self.page.get_by_text(f"{text_labels['create.export']}")
+        await element_by_exact_text.click()
+
+    async def handle_manage_page(self):
+        if await self.is_auth_required():
+            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}manage")
+
+    @name_enricher(add_transitions(
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archives)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
+    ))
+    async def assess_manage_page(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=TakeoutStates.start,
+        dest=TakeoutStates.on_manage,
+        before=ref(navigate_to_manage),
+        after=ref(assess_manage_page),
+    )))
+    async def run(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.on_archive, conditions=ref(has_newer_archive), after=ref(clean_downloads_dir)),
+        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.requesting_archive),
+    ))
+    async def evaluate_archives(self): ...
+
+    @name_enricher(add_transitions(transition(
+        source=TakeoutStates.complete,
+        dest=TakeoutStates.complete,
+    )))
+    async def finish_download(self): ...
+
+
+@with_model_definitions
+class TakeoutMachine(AsyncMachine):
+    pass
+
+
+def parse_takeout_timestamp(val):
+    return datetime.datetime.strptime(val, "%Y%m%dT%H%M%SZ")
+
+
+def encode_takeout_timestamp(val):
+    return val.strftime("%Y%m%dT%H%M%SZ")
 
 
 async def main():
@@ -89,7 +259,6 @@ async def main():
         raise Exception(f"{auth_json_path} is required")
     if not os.getenv("ENCODED_PASS"):
         raise Exception("ENCODED_PASS env is required")
-    # snapshot_in_progress = any(downloads_path.iterdir())
 
     last_snapshot_timestamp = None
     if timestamp_path.exists():
@@ -129,108 +298,15 @@ async def main():
                 page.on("response", handle_response)
 
                 print("inited page")
-                now = datetime.datetime.now()
+                model = TakeoutModel(page, last_snapshot_timestamp)
+                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.start.name, queued=True)
+
                 try:
-                    await page.goto(f"{TAKEOUT_BASEURL}manage")
-                    if page.url.startswith("https://accounts.google.com/v3/signin"):
-                        print(f"auth required, trying to reauth on {page.url}")
-                        await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}manage")
-
-                    export_in_progress = page.locator(
-                        f"text={text_labels["decline.export"]}"
-                    )
-                    if (
-                        last_snapshot_timestamp
-                        and abs(from_last_backup := now - last_snapshot_timestamp)
-                        < BACKUP_FRESHNESS_INTERVAL
-                    ):
-                        raise EarlyReturn(
-                            f"Last backup was made {from_last_backup.total_seconds() // 3600} hours ago. "
-                            f"Skipping new for at least {BACKUP_FRESHNESS_INTERVAL.total_seconds() // 3600} hours lag"
-                        )
-                    else:
-                        print(
-                            f"Last backup was made at {last_snapshot_timestamp}, {now=}. Checking if new backup is available"
-                        )
-                    if not await export_in_progress.is_hidden():
-                        raise EarlyReturn("Currently export is in progress, exiting")
-
-                    for f in downloads_path.iterdir():
-                        if f.is_file():
-                            f.unlink()
-                        elif f.is_dir():
-                            shutil.rmtree(f)
-
-                    ready_archive_links = await page.locator(
-                        "a",
-                        has=page.locator(
-                            "p", has_text=f"{text_labels["export.ready.label"]}"
-                        ),
-                    ).all()
-                    ready_archive_links = [
-                        await link.get_attribute("href") for link in ready_archive_links
-                    ]
-                    target_archive, target_archive_timestamp = (
-                        await filter_most_recent_archive(
-                            page, ready_archive_links, last_snapshot_timestamp
-                        )
-                    )
-                    if not target_archive:
-                        await request_new_archive(page)
-                        raise EarlyReturn(
-                            "We need new backup, requested export and exiting"
-                        )
-
-                    print(
-                        f"selected target archive: {target_archive}, {target_archive_timestamp=}"
-                    )
-                    target_archive_download_path = downloads_path.joinpath(
-                        target_archive.split("/")[-1]
-                    )
-                    target_archive_download_path.mkdir()
-                    await page.goto(f"{TAKEOUT_BASEURL}{target_archive}")
-                    await handle_reauth(page, target_url=f"{TAKEOUT_BASEURL}{target_archive}")
-                    archive_parts = await page.locator(
-                        f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
-                    ).all()
-                    print(f"going to download {len(archive_parts)} parts")
-                    try:
-                        for i, archive_part in enumerate(archive_parts, 1):
-                            async with page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                                await archive_part.click()
-                                await handle_reauth(page)
-                            download_meta = await download_info.value
-                            for try_n in range(1, 4):
-                                try:
-                                    await download_meta.save_as(
-                                        target_archive_download_path.joinpath(
-                                            download_meta.suggested_filename
-                                        )
-                                    )
-                                    break
-                                except Error:
-                                    if try_n >= 3:
-                                        raise
-                                    print(f"retrying download {i} after {try_n}")
-
-                            await download_meta.delete()
-                            print(f"downloaded {i}/{len(archive_parts)} parts")
-                    except TimeoutError:
-                        if not await page.locator(f'div[role="dialog"]').is_hidden():
-                            await request_new_archive(page)
-                            raise EarlyReturn(
-                                "We need new backup, requested export and exiting"
-                            )
-                        else:
-                            raise
+                    await model.run()
                     state = await page.context.storage_state()
                     auth_json_path.write_text(state["encoded_value"])
-                except EarlyReturn as e:
-                    state = await page.context.storage_state()
-                    auth_json_path.write_text(state["encoded_value"])
-                    print(e)
-                    return
-                except Exception:
+                    print(f"completed with state: {model.state}")
+                except Exception as e:
                     try:
                         if page and not page.is_closed():
                             now = datetime.datetime.now()
@@ -258,74 +334,58 @@ async def main():
 
     print("closed browser")
 
-    for f in target_archive_download_path.glob("*.zip"):
-        with zipfile.ZipFile(f, "r") as archive:
-            # unarchived_path = target_archive_download_path.joinpath(os.path.commonpath(archive.namelist()))
-            archive.extractall(target_archive_download_path)
-    print("unpacked archives")
+    if model.state == TakeoutStates.complete.name and hasattr(model, 'target_archive_download_path'):
+        for f in model.target_archive_download_path.glob("*.zip"):
+            with zipfile.ZipFile(f, "r") as archive:
+                archive.extractall(model.target_archive_download_path)
+        print("unpacked archives")
 
-    unpacked_root_dir = [item for item in target_archive_download_path.iterdir() if item.is_dir()][0]
-    renamed_folders = []
-    for root, dirs, files in unpacked_root_dir.walk():
-        for path in dirs:
-            folder_path = pathlib.Path(root.joinpath(path))
-            if m := re.match(text_labels["year.folder.template"], folder_path.stem):
-                new_path = folder_path.parent.joinpath(f"Photos from {m.group(1)}")
-                renamed_folders.append((folder_path, new_path))
-                folder_path.rename(new_path)
+        unpacked_root_dir = [item for item in model.target_archive_download_path.iterdir() if item.is_dir()][0]
+        renamed_folders = []
+        for root, dirs, files in unpacked_root_dir.walk():
+            for path in dirs:
+                folder_path = pathlib.Path(root.joinpath(path))
+                if m := re.match(text_labels["year.folder.template"], folder_path.stem):
+                    new_path = folder_path.parent.joinpath(f"Photos from {m.group(1)}")
+                    renamed_folders.append((folder_path, new_path))
+                    folder_path.rename(new_path)
 
-    print(f"renamed folders: {renamed_folders}")
+        print(f"renamed folders: {renamed_folders}")
 
-    processed_photos_path = target_archive_download_path.joinpath("export")
-    try:
-        subprocess.run(
-            [
-                "/app/utils/gpth",
-                "--copy",
-                "-i",
-                unpacked_root_dir,
-                "-o",
-                processed_photos_path,
-                "--albums",
-                "duplicate-copy",
-                "--no-divide-to-dates",
-            ],
-            text=True,
-            capture_output=True,
-            check=True,
+        processed_photos_path = model.target_archive_download_path.joinpath("export")
+        try:
+            subprocess.run(
+                [
+                    "/app/utils/gpth",
+                    "--copy",
+                    "-i",
+                    unpacked_root_dir,
+                    "-o",
+                    processed_photos_path,
+                    "--albums",
+                    "duplicate-copy",
+                    "--no-divide-to-dates",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Stderr: {e.stderr}", file=sys.stderr)
+            print(f"Stdout: {e.stdout}")
+            raise e
+
+        all_photos_path = processed_photos_path.joinpath(
+            os.getenv("GPTH_DEFAULT_FOLDER_NAME", "ALL_PHOTOS")
         )
-    except subprocess.CalledProcessError as e:
-        print(f"Stderr: {e.stderr}", file=sys.stderr)
-        print(f"Stdout: {e.stdout}")
-        raise e
-
-    all_photos_path = processed_photos_path.joinpath(
-        os.getenv("GPTH_DEFAULT_FOLDER_NAME", "ALL_PHOTOS")
-    )
-    for f in all_photos_path.iterdir():
-        shutil.move(f, processed_photos_path.joinpath(f.name))
-    all_photos_path.rmdir()
-    print("processed archives")
-    shutil.copytree(processed_photos_path, backup_path, dirs_exist_ok=True)
-    shutil.rmtree(target_archive_download_path)
-    timestamp_path.write_text(encode_takeout_timestamp(target_archive_timestamp))
-    print(f"successfully backed up up to {target_archive_timestamp}")
-
-
-async def request_new_archive(page):
-    await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
-    element_by_exact_text = page.get_by_text(f"{text_labels["proceed"]}")
-    await element_by_exact_text.click()
-    element_by_exact_text = page.get_by_text(f"{text_labels["create.export"]}")
-    await element_by_exact_text.click()
-
-
-def parse_takeout_timestamp(val):
-    return datetime.datetime.strptime(val, "%Y%m%dT%H%M%SZ")
-
-
-def encode_takeout_timestamp(val):
-    return val.strftime("%Y%m%dT%H%M%SZ")
+        for f in all_photos_path.iterdir():
+            shutil.move(f, processed_photos_path.joinpath(f.name))
+        all_photos_path.rmdir()
+        print("processed archives")
+        shutil.copytree(processed_photos_path, backup_path, dirs_exist_ok=True)
+        shutil.rmtree(model.target_archive_download_path)
+        timestamp_path.write_text(encode_takeout_timestamp(model.target_archive_timestamp))
+        print(f"successfully backed up up to {model.target_archive_timestamp}")
 
 
 if __name__ == "__main__":
