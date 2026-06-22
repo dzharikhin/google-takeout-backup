@@ -1,104 +1,20 @@
 services:
-  proxy:
-    build:
-      context: ..
-      dockerfile: browser-server/Dockerfile.proxy
-    restart: always
-    ports:
-      - "${PROXY_PUBLIC_PORT}:8080"
-    environment:
-      BROWSER_URL: ws://browser:${BROWSER_PORT}/srv
-    networks:
-      - secure_net
-    profiles:
-      - "headed"
-      - "virtual"
-      - "headless"
-
-  #  launch browser headless - faster and more efficient, but more often is detected as a bot
-  browser-headless:
-    restart: always
-    image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
-    entrypoint: [ "/app/browser-server-entrypoint.sh" ]
-    init: true
-    stdin_open: true
-    tty: true
-    environment:
-      COMPOSE_PROFILES: ${COMPOSE_PROFILES}
-      BROWSER_PORT: ${BROWSER_PORT}
-      PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION}
-    volumes:
-      - ./browser-server-entrypoint.sh:/app/browser-server-entrypoint.sh:ro
-      - ./browser-launch-params.json:/app/browser-launch-params.json:ro
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-    networks:
-      secure_net:
-        aliases:
-          - browser
-    expose:
-      - "${BROWSER_PORT}"
-    profiles:
-      - "headless"
-
-  #  launch browser headed on virtual display - helps to work out anti-bot protection
-  browser-virtual:
-    extends: browser-headless
-    profiles: !override
-      - "virtual"
-
-#  launch browser headed - maybe for debug purposes
-  browser-headed:
-    extends: browser-headless
-    environment:
-      XDG_RUNTIME_DIR: /tmp
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
-    volumes:
-      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/${WAYLAND_DISPLAY:-wayland-0}
-    devices:
-      - /dev/dri:/dev/dri
-    profiles: !override
-      - "headed"
-
-  browser-manual:
-    build:
-      context: ..
-      dockerfile: browser-server/Dockerfile.manual-auth
-    restart: no
-    environment:
-      HEADLESS_MODE: ${HEADLESS_MODE:-virtual}
-      USER_E: ${USER_E}
-      USER_P: ${USER_P}
-      TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
-      GOOGLE_LANG: EN
-    volumes:
-      - ./browser-downloads/:/app/browser-downloads
-    profiles: ["manual"]
-
   backup:
     restart: always
-    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+    build:
+      context: ..
+      dockerfile: backup-server/Dockerfile
     tty: true
     volumes:
-      - ./backup-entry.sh:/app/backup-entry.sh:ro
-      - ./../keys_RU.csv:/app/keys_RU.csv:ro
-      - ./../keys_EN.csv:/app/keys_EN.csv:ro
-      - ./../auth.py:/app/auth.py:ro
-      - ./backup.py:/app/backup.py:ro
       - ./.auth_encoded:/app/.auth_encoded
       - ./downloads:/app/downloads
       - ./photos:/app/photos
-      - ./utils:/app/utils
-    entrypoint: [ "/app/backup-entry.sh" ]
-    working_dir: /app
-    command: [ "backup.py" ]
+    networks:
+      - secure_net
     environment:
-      PLAYWRIGHT_VERSION: 1.54.0
-      BROWSER_SERVER_URL: ws://host.docker.internal:8082
+      BROWSER_SERVER_URL: ws://proxy:8080
       ENCODED_PASS: ${ENCODED_PASS}
       GOOGLE_LANG: RU
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
 networks:
   secure_net:

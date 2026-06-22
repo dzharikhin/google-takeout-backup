@@ -18,7 +18,7 @@ services:
   #  launch browser headless - faster and more efficient, but more often is detected as a bot
   browser-headless:
     restart: always
-    image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+    image: mcr.microsoft.com/playwright:v1.61.0-noble
     entrypoint: [ "/app/browser-server-entrypoint.sh" ]
     init: true
     stdin_open: true
@@ -26,7 +26,6 @@ services:
     environment:
       COMPOSE_PROFILES: ${COMPOSE_PROFILES}
       BROWSER_PORT: ${BROWSER_PORT}
-      PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION}
     volumes:
       - ./browser-server-entrypoint.sh:/app/browser-server-entrypoint.sh:ro
       - ./browser-launch-params.json:/app/browser-launch-params.json:ro
