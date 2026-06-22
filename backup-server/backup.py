@@ -76,8 +76,7 @@ class TakeoutModel:
         return self.page.url.startswith("https://accounts.google.com/v3/signin")
 
     async def is_export_running(self):
-        export_in_progress = self.page.locator(f"text={text_labels['decline.export']}")
-        return not await export_in_progress.is_hidden()
+        return not await self.page.locator('button[data-job-id]').is_hidden(timeout=self.timeout)
 
     async def is_backup_fresh(self):
         if not self.last_snapshot_timestamp:
@@ -85,12 +84,13 @@ class TakeoutModel:
         now = datetime.datetime.now()
         return abs(now - self.last_snapshot_timestamp) < BACKUP_FRESHNESS_INTERVAL
 
-    async def has_ready_archives(self):
-        ready_archive_links = await self.page.locator(
-            "a",
-            has=self.page.locator("p", has_text=f"{text_labels['export.ready.label']}"),
-        ).all()
-        return len(ready_archive_links) > 0
+    async def has_ready_archive_links(self):
+        hrefs = await self.page.evaluate("""
+            () => [...document.querySelectorAll('a[href]')]
+                .filter(a => a.querySelector('svg path[d*="l-8 8z"]'))
+                .map(a => a.getAttribute('href'))
+        """)
+        return len(hrefs) > 0
 
     async def has_newer_archive(self):
         return self.target_archive is not None
@@ -107,10 +107,10 @@ class TakeoutModel:
         tries = 0
         while tries < max_tries:
             if self.page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-                await self.page.locator("form").or_(self.page.locator("ul")).locator("li>div").first.click()
+                await self.page.locator("form").or_(self.page.locator("ul")).locator("li>div").first.click(timeout=self.timeout)
             elif self.page.url.startswith("https://gds.google.com/web/homeaddress"):
                 element_by_exact_text = self.page.get_by_text(f"{text_labels['skip']}")
-                await element_by_exact_text.click()
+                await element_by_exact_text.click(timeout=self.timeout)
             await asyncio.sleep(timeout_millis / 1000 / max_tries)
             if self.page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
                 await self.page.fill(
@@ -118,7 +118,7 @@ class TakeoutModel:
                 )
                 await self.page.locator(f"button#passwordNext").or_(
                     self.page.locator(f"div#passwordNext")
-                ).click()
+                ).click(timeout=self.timeout)
                 if target_url:
                     await self.page.wait_for_url(
                         lambda u: u.startswith(target_url), timeout=timeout_millis
@@ -126,24 +126,15 @@ class TakeoutModel:
                 return
             tries += 1
 
-    async def collect_ready_archive_links(self):
-        ready_archive_links = await self.page.locator(
-            "a",
-            has=self.page.locator("p", has_text=f"{text_labels['export.ready.label']}"),
-        ).all()
-        self.ready_archive_links = [
-            await link.get_attribute("href") for link in ready_archive_links
-        ]
-
     async def find_most_recent_archive(self):
         for ready_archive_link in self.ready_archive_links:
             await self.page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
             await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{ready_archive_link}")
             report_download_button = self.page.locator(
-                f'a[aria-label="{text_labels["report.download"]}"]'
-            )
+                'a[href*="takeout/download"]:not(div[data-download-uri] a)'
+            ).first
             async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                await report_download_button.click()
+                await report_download_button.click(timeout=self.timeout)
                 await self.handle_reauth()
             download_meta = await download_info.value
             current_archive_timestamp = parse_takeout_timestamp(
@@ -173,7 +164,7 @@ class TakeoutModel:
         await self.page.goto(f"{TAKEOUT_BASEURL}{self.target_archive}")
         await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{self.target_archive}")
         self.archive_parts = await self.page.locator(
-            f'a[href*="takeout/download"]:not([aria-label*="{text_labels["report.download"]}"])'
+            'div[data-download-uri] a[href*="takeout/download"]'
         ).all()
 
     async def handle_archive_page(self):
@@ -182,7 +173,7 @@ class TakeoutModel:
     async def download_archive_parts(self):
         for i, archive_part in enumerate(self.archive_parts, 1):
             async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                await archive_part.click()
+                await archive_part.click(timeout=self.timeout)
                 await self.handle_reauth()
             download_meta = await download_info.value
             for try_n in range(1, 4):
@@ -202,10 +193,8 @@ class TakeoutModel:
 
     async def request_new_archive(self):
         await self.page.goto(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
-        element_by_exact_text = self.page.get_by_text(f"{text_labels['proceed']}")
-        await element_by_exact_text.click()
-        element_by_exact_text = self.page.get_by_text(f"{text_labels['create.export']}")
-        await element_by_exact_text.click()
+        await self.page.locator('div[data-jobid] button[aria-label]').click(timeout=self.timeout)
+        await self.page.locator('div[data-configure-step] button').click(timeout=self.timeout)
 
     async def handle_manage_page(self):
         if await self.is_auth_required():
@@ -214,7 +203,7 @@ class TakeoutModel:
     @name_enricher(add_transitions(
         transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
         transition(source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archives)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archive_links)),
         transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
     ))
     async def assess_manage_page(self): ...
