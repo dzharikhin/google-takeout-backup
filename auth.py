@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import expect, Locator, Page
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
@@ -32,6 +33,7 @@ class States:
     other_challenge_select = AsyncState(name="other_challenge_select")
     challenge_confirm = AsyncState(name="challenge_confirm", on_enter="handle_challenge_confirm")
     offer_to_restore = AsyncState(name="offer_to_restore")
+    address_entry = AsyncState(name="address_entry", on_enter="skip_address")
     auth_success = AsyncState(name="auth_success", final=True)
 
     @classmethod
@@ -47,6 +49,8 @@ class GoogleLoginModel:
 
     async def is_refresh_complete(self):
         progress_bar = self.page.locator('[role="progressbar"]')
+        if await progress_bar.count() == 0:
+            return
         await expect(progress_bar).to_have_attribute("aria-hidden", "true", timeout=self.timeout)
 
     @property
@@ -81,12 +85,18 @@ class GoogleLoginModel:
         await self.is_refresh_complete()
         await self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]').is_visible(timeout=self.timeout)
 
+    async def is_address_entry(self):
+        await self.is_refresh_complete()
+        parsed = urlparse(self.page.url)
+        return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
+
     async def is_takeout_url(self):
         await self.page.wait_for_url(TAKEOUT_URL, timeout=self.timeout)
         return self.page.url.startswith(TAKEOUT_URL)
 
     async def is_signin(self):
-        await self.email_input.is_visible(timeout=self.timeout)
+        await self.is_refresh_complete()
+        return await self.email_input.is_visible(timeout=self.timeout)
 
     async def select_account(self):
         await self.account_chooser_item.click(timeout=self.timeout)
@@ -129,6 +139,12 @@ class GoogleLoginModel:
         proceed_button = self.page.locator('[href^="https://takeout.google.com/settings/takeout/custom/photos"]')
         await proceed_button.click(timeout=self.timeout)
 
+    async def skip_address(self):
+        parsed = urlparse(self.page.url)
+        params = parse_qs(parsed.query)
+        continue_url = params.get("continue", [TAKEOUT_URL])[0]
+        await self.page.goto(continue_url)
+
     async def handle_challenge_confirm(self):
         text = await self.page.locator("body").inner_text()
         print(text)
@@ -138,15 +154,15 @@ class GoogleLoginModel:
         }, return_when=asyncio.FIRST_COMPLETED)
         await self.confirm_mfa()
 
-    @name_enricher(add_transitions(transition(
-        source=States.offer_to_restore,
-        dest=States.auth_success,
-        before=ref(click_skip_restore),
-    )))
+    @name_enricher(add_transitions(
+        transition(source=States.offer_to_restore, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
+        transition(source=States.offer_to_restore, dest=States.auth_success, before=ref(click_skip_restore)),
+    ))
     async def skip_restoration(self): ...
 
     @name_enricher(add_transitions(
         transition(source=States.challenge_confirm, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
+        transition(source=States.challenge_confirm, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
         transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def confirm_mfa(self): ...
@@ -170,6 +186,7 @@ class GoogleLoginModel:
         transition(source=States.password_entry, dest=States.challenge_skotp, conditions=ref(is_skotp), after=ref(skip_skotp)),
         transition(source=States.password_entry, dest=States.other_challenge_select, conditions=ref(is_mfa_selection), after=ref(select_acceptable_mfa)),
         transition(source=States.password_entry, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
+        transition(source=States.password_entry, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
         transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def submit_password(self): ...
@@ -190,7 +207,9 @@ class GoogleLoginModel:
 
     @name_enricher(add_transitions(
         transition(source=States.start, dest=States.account_chooser, conditions=ref(is_account_chooser), after=ref(select_and_proceed)),
-        transition(source=States.start, dest=States.email_entry, before=ref(is_signin), after=ref(submit_email)),
+        transition(source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)),
+        transition(source=States.start, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
+        transition(source=States.start, dest=States.auth_success),
     ))
     async def sign_in(self): ...
 
