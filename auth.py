@@ -28,6 +28,7 @@ class States:
     email_entry = AsyncState(name="email_entry", on_enter="fill_email_and_proceed")
     password_entry = AsyncState(name="password_entry", on_enter="fill_password_and_proceed")
     challenge_skotp = AsyncState(name="challenge_skotp")
+    account_chooser = AsyncState(name="account_chooser", on_enter="select_account")
     other_challenge_select = AsyncState(name="other_challenge_select")
     challenge_confirm = AsyncState(name="challenge_confirm", on_enter="handle_challenge_confirm")
     offer_to_restore = AsyncState(name="offer_to_restore")
@@ -60,9 +61,17 @@ class GoogleLoginModel:
     def default_mfa_input(self) -> Locator:
         return self.page.locator("input#securityKeyOtpInputId")
 
+    @property
+    def account_chooser_item(self) -> Locator:
+        return self.page.locator("div[data-button-type=multipleChoiceIdentifier]")
+
     async def is_skotp(self):
         await self.is_refresh_complete()
         return await self.default_mfa_input.is_visible(timeout=self.timeout)
+
+    async def is_account_chooser(self):
+        await self.is_refresh_complete()
+        return await self.account_chooser_item.is_visible(timeout=self.timeout)
 
     async def is_mfa_selection(self):
         await self.is_refresh_complete()
@@ -76,9 +85,11 @@ class GoogleLoginModel:
         await self.page.wait_for_url(TAKEOUT_URL, timeout=self.timeout)
         return self.page.url.startswith(TAKEOUT_URL)
 
-    async def verify_signin(self):
-        email_input = self.email_input
-        await expect(email_input).to_be_visible(timeout=self.timeout)
+    async def is_signin(self):
+        await self.email_input.is_visible(timeout=self.timeout)
+
+    async def select_account(self):
+        await self.account_chooser_item.click(timeout=self.timeout)
 
     async def fill_email_and_proceed(self):
         email_input = self.email_input
@@ -171,11 +182,16 @@ class GoogleLoginModel:
     async def submit_email(self): ...
 
     @name_enricher(add_transitions(transition(
-        source=States.start,
-        dest=States.email_entry,
-        before=ref(verify_signin),
-        after=ref(submit_email),
+        source=States.account_chooser,
+        dest=States.password_entry,
+        after=ref(submit_password),
     )))
+    async def select_and_proceed(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=States.start, dest=States.account_chooser, conditions=ref(is_account_chooser), after=ref(select_and_proceed)),
+        transition(source=States.start, dest=States.email_entry, before=ref(is_signin), after=ref(submit_email)),
+    ))
     async def sign_in(self): ...
 
 
