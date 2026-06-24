@@ -51,11 +51,11 @@ async def proxy_websocket(client_websocket: ServerConnection):
 
 async def process_client_message(message):
     modified_message = message
-    if encrypted_ := re.search('"input\\[type=password]","value":("[^"]+")', message):
+    if encrypted_ := re.search('"input\\[type=(?:password|email)]","(?:value|text)":("[^"]+")', message):
         try:
             val = decrypt(secret_key, bytes.fromhex(encrypted_.group(1).strip('"')))
             modified_message = re.sub(
-                '("input\\[type=password]","value"):("[^"]+")',
+                '("input\\[type=(?:password|email)]","(?:value|text)"):("[^"]+")',
                 f'\\1:"{val.decode()}"',
                 message,
             )

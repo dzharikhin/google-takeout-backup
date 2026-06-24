@@ -1,13 +1,14 @@
 import asyncio
 import os
-import random
 from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import expect, Locator, Page
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
-TAKEOUT_URL = "https://takeout.google.com/settings/takeout/custom/photos"
+TAKEOUT_BASEURL = "https://takeout.google.com/"
+TAKEOUT_URL = f"{TAKEOUT_BASEURL}settings/takeout/custom/photos"
+
 
 
 def name_enricher(outer):
@@ -42,9 +43,11 @@ class States:
 
 
 class GoogleLoginModel:
-    def __init__(self, page: Page, timeout):
+    def __init__(self, page: Page, timeout, email_env="USER_E", password_env="USER_P"):
         self.page = page
         self.timeout = timeout
+        self.email_env = email_env
+        self.password_env = password_env
         self.state = "start"
 
     async def is_refresh_complete(self):
@@ -91,8 +94,10 @@ class GoogleLoginModel:
         return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
 
     async def is_takeout_url(self):
-        await self.page.wait_for_url(TAKEOUT_URL, timeout=self.timeout)
-        return self.page.url.startswith(TAKEOUT_URL)
+        await self.page.wait_for_url(
+            lambda u: u.startswith(TAKEOUT_BASEURL), timeout=self.timeout
+        )
+        return self.page.url.startswith(TAKEOUT_BASEURL)
 
     async def is_signin(self):
         await self.is_refresh_complete()
@@ -105,10 +110,7 @@ class GoogleLoginModel:
         email_input = self.email_input
         await expect(email_input).to_have_count(1, timeout=self.timeout)
         await expect(email_input).to_be_visible(timeout=self.timeout)
-        email = os.getenv("USER_E")
-        await email_input.focus()
-        await email_input.press_sequentially(email, delay=random.randint(11, 49))
-        await self.page.wait_for_timeout(random.randint(666, 973))
+        await email_input.fill(os.getenv(self.email_env))
         await self.page.locator("button#identifierNext").or_(
             self.page.locator("div#identifierNext")
         ).click(timeout=self.timeout)
@@ -117,10 +119,7 @@ class GoogleLoginModel:
         password_input = self.page.locator("input[type=password]:visible")
         await expect(password_input).to_have_count(1, timeout=self.timeout)
         await expect(password_input).to_be_visible(timeout=self.timeout)
-        password = os.getenv("USER_P")
-        await password_input.focus()
-        await password_input.type(password, delay=random.randint(11, 49))
-        await self.page.wait_for_timeout(random.randint(666, 973))
+        await password_input.fill(os.getenv(self.password_env))
         await self.page.locator("button#passwordNext").or_(
             self.page.locator("div#passwordNext")
         ).click(timeout=self.timeout)
@@ -136,13 +135,13 @@ class GoogleLoginModel:
         await challenge_button.click(timeout=self.timeout)
 
     async def click_skip_restore(self):
-        proceed_button = self.page.locator('[href^="https://takeout.google.com/settings/takeout/custom/photos"]')
+        proceed_button = self.page.locator('[href^="https://takeout.google.com/"]')
         await proceed_button.click(timeout=self.timeout)
 
     async def skip_address(self):
         parsed = urlparse(self.page.url)
         params = parse_qs(parsed.query)
-        continue_url = params.get("continue", [TAKEOUT_URL])[0]
+        continue_url = params.get("continue", [TAKEOUT_BASEURL])[0]
         await self.page.goto(continue_url)
 
     async def handle_challenge_confirm(self):

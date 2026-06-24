@@ -13,7 +13,8 @@ from playwright.async_api import async_playwright, Error
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
-TAKEOUT_BASEURL = "https://takeout.google.com/"
+from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
+
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
     hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12"))
 )
@@ -46,7 +47,7 @@ def ref(func):
 
 class TakeoutStates:
     start = AsyncState(name="start")
-    on_manage = AsyncState(name="on_manage", on_enter="handle_manage_page")
+    on_manage = AsyncState(name="on_manage")
     export_in_progress = AsyncState(name="export_in_progress", final=True)
     backup_fresh = AsyncState(name="backup_fresh", final=True)
     selecting_archive = AsyncState(name="selecting_archive", on_enter="find_most_recent_archive")
@@ -71,9 +72,6 @@ class TakeoutModel:
         self.ready_archive_links = None
         self.archive_parts = None
         self.state = "start"
-
-    async def is_auth_required(self):
-        return self.page.url.startswith("https://accounts.google.com/v3/signin")
 
     async def is_export_running(self):
         return not await self.page.locator('button[data-job-id]').is_hidden(timeout=self.timeout)
@@ -100,42 +98,32 @@ class TakeoutModel:
 
     async def navigate_to_manage(self):
         await self.page.goto(f"{TAKEOUT_BASEURL}manage")
-        if await self.is_auth_required():
-            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}manage")
 
-    async def handle_reauth(self, target_url=None, timeout_millis=TIMEOUT_MILLIS * 2, max_tries=3):
-        tries = 0
-        while tries < max_tries:
-            if self.page.url.startswith("https://accounts.google.com/v3/signin/accountchooser"):
-                await self.page.locator("form").or_(self.page.locator("ul")).locator("li>div").first.click(timeout=self.timeout)
-            elif self.page.url.startswith("https://gds.google.com/web/homeaddress"):
-                element_by_exact_text = self.page.get_by_text(f"{text_labels['skip']}")
-                await element_by_exact_text.click(timeout=self.timeout)
-            await asyncio.sleep(timeout_millis / 1000 / max_tries)
-            if self.page.url.startswith("https://accounts.google.com/v3/signin/challenge/pwd"):
-                await self.page.fill(
-                    selector="input[type=password]", value=os.getenv("ENCODED_PASS")
-                )
-                await self.page.locator(f"button#passwordNext").or_(
-                    self.page.locator(f"div#passwordNext")
-                ).click(timeout=self.timeout)
-                if target_url:
-                    await self.page.wait_for_url(
-                        lambda u: u.startswith(target_url), timeout=timeout_millis
-                    )
-                return
-            tries += 1
+    async def ensure_auth(self):
+        auth_model = GoogleLoginModel(
+            page=self.page,
+            timeout=self.timeout,
+            email_env="IF_YOU_NEED_THIS_HERE_IT_IS_BAD",
+            password_env="ENCODED_PASS",
+        )
+        GoogleLoginMachine(
+            auth_model,
+            states=States.as_list(),
+            initial=States.start,
+            queued=True,
+        )
+        await auth_model.sign_in()
 
     async def find_most_recent_archive(self):
         for ready_archive_link in self.ready_archive_links:
             await self.page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
-            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{ready_archive_link}")
+            await self.ensure_auth()
             report_download_button = self.page.locator(
                 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
             ).first
             async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
                 await report_download_button.click(timeout=self.timeout)
-                await self.handle_reauth()
+                await self.ensure_auth()
             download_meta = await download_info.value
             current_archive_timestamp = parse_takeout_timestamp(
                 download_meta.suggested_filename.split("-", 3)[1]
@@ -162,7 +150,7 @@ class TakeoutModel:
 
     async def navigate_to_archive(self):
         await self.page.goto(f"{TAKEOUT_BASEURL}{self.target_archive}")
-        await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}{self.target_archive}")
+        await self.ensure_auth()
         self.archive_parts = await self.page.locator(
             'div[data-download-uri] a[href*="takeout/download"]'
         ).all()
@@ -174,7 +162,7 @@ class TakeoutModel:
         for i, archive_part in enumerate(self.archive_parts, 1):
             async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
                 await archive_part.click(timeout=self.timeout)
-                await self.handle_reauth()
+                await self.ensure_auth()
             download_meta = await download_info.value
             for try_n in range(1, 4):
                 try:
@@ -195,10 +183,6 @@ class TakeoutModel:
         await self.page.goto(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
         await self.page.locator('div[data-jobid] button[aria-label]').click(timeout=self.timeout)
         await self.page.locator('div[data-configure-step] button').click(timeout=self.timeout)
-
-    async def handle_manage_page(self):
-        if await self.is_auth_required():
-            await self.handle_reauth(target_url=f"{TAKEOUT_BASEURL}manage")
 
     @name_enricher(add_transitions(
         transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
@@ -288,7 +272,7 @@ async def main():
 
                 print("inited page")
                 model = TakeoutModel(page, last_snapshot_timestamp)
-                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.start.name, queued=True)
+                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.start.name, queued=True, prepare_event="ensure_auth")
 
                 try:
                     await model.run()

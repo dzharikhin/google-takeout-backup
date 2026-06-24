@@ -273,14 +273,15 @@ source = { virtual = "." }
 [package.dev-dependencies]
 backup = [
     { name = "playwright" },
+    { name = "transitions" },
 ]
 dev = [
     { name = "playwright" },
     { name = "python-statemachine" },
-    { name = "transitions" },
 ]
 manual-auth = [
     { name = "invisible-playwright" },
+    { name = "transitions" },
 ]
 proxy = [
     { name = "coincurve" },
@@ -292,13 +293,18 @@ proxy = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-backup = [{ name = "playwright", specifier = ">=1.60.0" }]
+backup = [
+    { name = "playwright", specifier = ">=1.60.0" },
+    { name = "transitions", specifier = ">=0.9.3" },
+]
 dev = [
     { name = "playwright", specifier = ">=1.60.0" },
     { name = "python-statemachine", specifier = ">=3.2.0" },
+]
+manual-auth = [
+    { name = "invisible-playwright", git = "https://github.com/feder-cr/invisible_playwright.git" },
     { name = "transitions", specifier = ">=0.9.3" },
 ]
-manual-auth = [{ name = "invisible-playwright", git = "https://github.com/feder-cr/invisible_playwright.git" }]
 proxy = [
     { name = "coincurve" },
     { name = "eciespy" },
