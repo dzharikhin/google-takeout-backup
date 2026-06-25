@@ -1,0 +1,8 @@
+FROM mcr.microsoft.com/playwright:v1.61.0-noble
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-default --group browser
+RUN uv run --no-project --group browser python -m invisible_playwright fetch
+COPY browser-server/browser-server-entrypoint.sh ./
+COPY browser-server/generate_launch_config.py ./

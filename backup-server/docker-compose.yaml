@@ -7,15 +7,10 @@ services:
     tty: true
     volumes:
       - ./.auth_encoded:/app/.auth_encoded
+      - ./.fp_settings:/app/.fp_settings
       - ./downloads:/app/downloads
       - ./photos:/app/photos
-    networks:
-      - secure_net
     environment:
-      BROWSER_SERVER_URL: ws://proxy:8080
+      BROWSER_SERVER_URL: ${BROWSER_SERVER_URL:-ws://host.docker.internal:8082}
       ENCODED_PASS: ${ENCODED_PASS}
       GOOGLE_LANG: RU
-
-networks:
-  secure_net:
-    external: true

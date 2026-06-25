@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -239,17 +240,24 @@ async def main():
 
     print("inited config")
     async with async_playwright() as playwright:
-        async with await playwright.chromium.connect(
-            os.getenv("BROWSER_SERVER_URL", f"ws://localhost:8082/srv"),
+        # Read fingerprint settings
+        fp_settings_path = pathlib.Path(".fp_settings")
+        fp_settings = {}
+        if fp_settings_path.exists():
+            fp_settings = json.loads(fp_settings_path.read_text())
+        
+        async with await playwright.firefox.connect(
+            os.getenv("BROWSER_SERVER_URL", f"ws://host.docker.internal:8082/srv"),
             timeout=TIMEOUT_MILLIS,
         ) as browser:
             print("inited browser")
             page = await browser.new_page(
                 storage_state={"encoded_value": auth_json_path.read_text()},
                 accept_downloads=True,
-                viewport={"width": 1280, "height": 1024},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+                **fp_settings,
             )
+            # FF150 about:newtab race condition: sleep 400ms after new_page
+            await asyncio.sleep(0.4)
             page.set_default_timeout(TIMEOUT_MILLIS)
             async with page:
                 console = []

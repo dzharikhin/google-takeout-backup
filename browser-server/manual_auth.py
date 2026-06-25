@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import pathlib
@@ -13,6 +14,11 @@ logging.basicConfig(level=logging.INFO)
 
 downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
+
+# Import invisible_playwright helpers for fingerprint settings
+from invisible_playwright.config import get_default_stealth_prefs
+from invisible_playwright.download import ensure_binary
+from invisible_playwright.launcher import _CHROME_W, _CHROME_H, _TASKBAR_H
 
 
 async def main():
@@ -32,11 +38,61 @@ async def main():
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_dir = pathlib.Path(tmp)
+                    
+                    # Save storage_state
                     file_path = tmp_dir.joinpath("file.json")
                     await page.context.storage_state(path=file_path)
                     print()
                     print(file_path.read_text())
                     print()
+                    
+                    # Save fingerprint settings for backup
+                    # The browser variable is still in scope here (inside async with)
+                    if browser and hasattr(browser, '_profile'):
+                        profile = browser._profile
+                        fp_settings = {
+                            "viewport": {
+                                "width": profile.screen.width - _CHROME_W,
+                                "height": profile.screen.height - _TASKBAR_H - _CHROME_H,
+                            },
+                            "screen": {
+                                "width": profile.screen.width,
+                                "height": profile.screen.height,
+                            },
+                            "device_scale_factor": profile.screen.dpr,
+                            "color_scheme": "dark" if profile.dark_theme else "light",
+                            "timezone_id": browser._timezone if hasattr(browser, '_timezone') else "",
+                            "locale": browser._locale if hasattr(browser, '_locale') else "en-US",
+                            "humanize": browser._humanize if hasattr(browser, '_humanize') else True,
+                            "seed": profile.seed if hasattr(profile, 'seed') else 42,
+                        }
+                        
+                        # Save full prefs for reference
+                        prefs = get_default_stealth_prefs(
+                            seed=profile.seed if hasattr(profile, 'seed') else 42,
+                            locale=browser._locale if hasattr(browser, '_locale') else "en-US",
+                            timezone=browser._timezone if hasattr(browser, '_timezone') else "",
+                            humanize=browser._humanize if hasattr(browser, '_humanize') else True,
+                        )
+                        prefs_path = downloads_path / ".fp_prefs.json"
+                        prefs_path.write_text(json.dumps(prefs, indent=2))
+                        print(f"Saved Firefox prefs to {prefs_path} ({len(prefs)} keys)")
+                    else:
+                        # Fallback: use default values
+                        fp_settings = {
+                            "viewport": {"width": 1906, "height": 949},
+                            "screen": {"width": 1920, "height": 1080},
+                            "device_scale_factor": 1.0,
+                            "color_scheme": "light",
+                            "timezone_id": "",
+                            "locale": "en-US",
+                            "humanize": True,
+                            "seed": 42,
+                        }
+                    
+                    settings_path = downloads_path / ".fp_settings.json"
+                    settings_path.write_text(json.dumps(fp_settings, indent=2))
+                    print(f"Saved fingerprint settings to {settings_path}")
             finally:
                 manual_auth_wait.pop()
 
