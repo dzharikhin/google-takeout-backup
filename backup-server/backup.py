@@ -241,7 +241,7 @@ async def main():
     print("inited config")
     async with async_playwright() as playwright:
         # Read fingerprint settings
-        fp_settings_path = pathlib.Path(".fp_settings")
+        fp_settings_path = pathlib.Path(".fp_settings.json")
         fp_settings = {}
         if fp_settings_path.exists():
             fp_settings = json.loads(fp_settings_path.read_text())

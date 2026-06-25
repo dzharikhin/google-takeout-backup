@@ -3,13 +3,21 @@ services:
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.proxy
+      args:
+        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
     restart: always
+    env_file:
+      - ../.env
+      - .env
     ports:
       - "${PROXY_PUBLIC_PORT:-8082}:8080"
     environment:
       BROWSER_URL: ws://browser:${BROWSER_PORT}/srv
+      PYTHONUNBUFFERED: "1"
     networks:
       - secure_net
+    depends_on:
+      - browser-virtual
     profiles:
       - "headed"
       - "virtual"
@@ -19,11 +27,17 @@ services:
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.browser
+      args:
+        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
     restart: always
     stdin_open: true
     tty: true
+    env_file:
+      - ../.env
+      - .env
     environment:
       COMPOSE_PROFILES: virtual
+      HEADLESS_MODE: virtual
       BROWSER_PORT: ${BROWSER_PORT:-8081}
       FP_SEED: ${FP_SEED:-42}
       FP_LOCALE: ${FP_LOCALE:-en-US}
@@ -46,9 +60,15 @@ services:
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.browser
+      args:
+        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
     restart: always
+    env_file:
+      - ../.env
+      - .env
     environment:
       COMPOSE_PROFILES: headed
+      HEADLESS_MODE: headed
       BROWSER_PORT: ${BROWSER_PORT:-8081}
       FP_SEED: ${FP_SEED:-42}
       FP_LOCALE: ${FP_LOCALE:-en-US}

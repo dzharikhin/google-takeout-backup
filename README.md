@@ -23,7 +23,7 @@ Browser server services should interact via secure network exposing only one pub
 You can run browser server on a dedicated node if it is connected to backup server
 1. go to [browser-server](./browser-server)
 2. `docker network create --opt encrypted --attachable secure_net`
-3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) COMPOSE_PROFILES=manual && docker-compose up`
+3. `USER_E="{your account email}" USER_P=$(read -rsp "Pswd: " p && echo $p) COMPOSE_PROFILES=manual docker-compose up`
    > `docker-compose` may be `docker compose` in some distribs 
    > 
    > by default manual browser launches on a virtual display in `headed` mode to avoid automation detection

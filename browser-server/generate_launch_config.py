@@ -28,6 +28,7 @@ config = {
     "userDataDir": str(downloads_path.parent / "browser-local-storage"),
     "downloadsPath": str(downloads_path),
     "headless": False,
+    "host": "0.0.0.0",
     "port": int(os.getenv("BROWSER_PORT", "8081")),
     "wsPath": "/srv",
     "args": [],

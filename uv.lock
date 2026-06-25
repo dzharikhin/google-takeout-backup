@@ -267,13 +267,16 @@ wheels = [
 
 [[package]]
 name = "google-takeout-backup"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
 backup = [
     { name = "playwright" },
     { name = "transitions" },
+]
+browser = [
+    { name = "invisible-playwright" },
 ]
 dev = [
     { name = "playwright" },
@@ -294,11 +297,12 @@ proxy = [
 
 [package.metadata.requires-dev]
 backup = [
-    { name = "playwright", specifier = ">=1.60.0" },
+    { name = "playwright", specifier = "==1.60.0" },
     { name = "transitions", specifier = ">=0.9.3" },
 ]
+browser = [{ name = "invisible-playwright", git = "https://github.com/feder-cr/invisible_playwright.git" }]
 dev = [
-    { name = "playwright", specifier = ">=1.60.0" },
+    { name = "playwright", specifier = "==1.60.0" },
     { name = "python-statemachine", specifier = ">=3.2.0" },
 ]
 manual-auth = [

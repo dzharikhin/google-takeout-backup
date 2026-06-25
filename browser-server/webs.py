@@ -30,9 +30,25 @@ not_shutdown = [1]
 
 async def proxy_websocket(client_websocket: ServerConnection):
     try:
-        async with websockets.connect(
-            backend_uri, max_size=MAX_MESSAGE_SIZE
-        ) as backend_websocket:
+        max_retries = 10
+        retry_delay = 2.0
+        backend_websocket = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                backend_websocket = await websockets.connect(
+                    backend_uri, max_size=MAX_MESSAGE_SIZE
+                )
+                break
+            except (websockets.exceptions.ConnectionRefused, OSError) as e:
+                if attempt < max_retries:
+                    print(f"Connection attempt {attempt} failed: {e}. Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30)
+                else:
+                    raise
+        
+        async with backend_websocket:
             print(f"connected to {backend_uri=}")
 
             async def client_to_backend():
@@ -45,8 +61,8 @@ async def proxy_websocket(client_websocket: ServerConnection):
 
             await asyncio.gather(client_to_backend(), backend_to_client())
 
-    except websockets.exceptions.ConnectionClosedOK:
-        print("Backend connection closed normally.")
+    except Exception as e:
+        print(f"Proxy connection handler failed: {e}")
 
 
 async def process_client_message(message):

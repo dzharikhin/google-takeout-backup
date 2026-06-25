@@ -17,19 +17,18 @@ default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
 
 # Import invisible_playwright helpers for fingerprint settings
 from invisible_playwright.config import get_default_stealth_prefs
-from invisible_playwright.download import ensure_binary
 from invisible_playwright.launcher import _CHROME_W, _CHROME_H, _TASKBAR_H
 
 
 async def main():
-    print(os.getenv("DISPLAY"))
+    print(f"display: {os.getenv("DISPLAY")}")
     global manual_auth_wait
     manual_auth_wait = [1]
 
-    headless_mode = os.getenv("HEADLESS_MODE", "headed")
-    headless = bool(headless_mode.lower() == "headless")
+    headless_mode = os.getenv("HEADLESS_MODE", "virtual")
+    headed = bool(headless_mode.lower() == "headed")
     print(f"{headless_mode=}")
-    async with InvisiblePlaywright(headless=headless) as browser:
+    async with InvisiblePlaywright() as browser:
         page = await browser.new_page()
         page.set_default_timeout(default_timeout)
 
@@ -98,7 +97,10 @@ async def main():
 
         try:
             await page.goto(TAKEOUT_URL)
-            if headless:
+            if headed:
+                page.on("close", handle_manual_auth_close)
+                print(f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful")
+            else:
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
                     model = GoogleLoginModel(page=page, timeout=default_timeout)
@@ -107,9 +109,6 @@ async def main():
                     print("login script is finished")
                 if page.url.startswith(TAKEOUT_URL):
                     await handle_manual_auth_close(page)
-            else:
-                page.on("close", handle_manual_auth_close)
-                print(f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful")
         except Exception:
             try:
                 if page and not page.is_closed():

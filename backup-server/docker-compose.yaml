@@ -4,13 +4,20 @@ services:
     build:
       context: ..
       dockerfile: backup-server/Dockerfile
+      args:
+        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
+    env_file:
+      - ../.env
+      - .env
     tty: true
     volumes:
       - ./.auth_encoded:/app/.auth_encoded
-      - ./.fp_settings:/app/.fp_settings
+      - ./.fp_settings.json:/app/.fp_settings.json
       - ./downloads:/app/downloads
       - ./photos:/app/photos
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      BROWSER_SERVER_URL: ${BROWSER_SERVER_URL:-ws://host.docker.internal:8082}
+      BROWSER_SERVER_URL: ${BROWSER_SERVER_URL:-ws://host.docker.internal:${PROXY_PUBLIC_PORT}}
       ENCODED_PASS: ${ENCODED_PASS}
       GOOGLE_LANG: RU

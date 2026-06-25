@@ -28,21 +28,24 @@ The proxy (`browser-server/webs.py`) intercepts Playwright CDP messages to encry
 
 ## Running
 
-All commands use Docker Compose from `browser-server/` or `backup-server/` directories.
+All commands use Docker Compose from the project root directory.
 
 ```sh
 # First: create the shared encrypted network
 docker network create --opt encrypted --attachable secure_net
 
 # Browser server (virtual display, recommended)
-cd browser-server
-COMPOSE_PROFILES=virtual docker compose up -d
+docker compose --env-file .env --env-file browser-server/.env \
+  -f browser-server/docker-compose.yaml --profile virtual up -d
 
 # Backup server (builds from Dockerfile)
-cd backup-server
-docker compose build
-docker compose up -d
+docker compose --env-file .env --env-file backup-server/.env \
+  -f backup-server/docker-compose.yaml up -d
 ```
+
+### Playwright version
+
+The Playwright version is declared in root `.env` (`PLAYWRIGHT_VERSION`) and pinned in `pyproject.toml` (`playwright==X.Y.Z`). Keep both in sync to avoid protocol version mismatches between the Python client and browser binary.
 
 ## Encryption key rotation
 
