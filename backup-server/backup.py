@@ -2,6 +2,7 @@ import asyncio
 import csv
 import datetime
 import json
+import logging
 import os
 import pathlib
 import re
@@ -9,12 +10,16 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
 from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("transitions.core").setLevel(logging.ERROR)
 
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
     hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12"))
@@ -84,11 +89,13 @@ class TakeoutModel:
         return abs(now - self.last_snapshot_timestamp) < BACKUP_FRESHNESS_INTERVAL
 
     async def has_ready_archive_links(self):
-        hrefs = await self.page.evaluate("""
-            () => [...document.querySelectorAll('a[href]')]
-                .filter(a => a.querySelector('svg path[d*="l-8 8z"]'))
-                .map(a => a.getAttribute('href'))
-        """)
+        links = await self.page.locator('a[href]:has(svg path[d*="l-8 8z"])').all()
+        hrefs = []
+        for link in links:
+            href = await link.get_attribute("href")
+            if href:
+                hrefs.append(href)
+        self.ready_archive_links = hrefs
         return len(hrefs) > 0
 
     async def has_newer_archive(self):
@@ -115,6 +122,24 @@ class TakeoutModel:
         )
         await auth_model.sign_in()
 
+    async def download_with_reauth(self, click_action):
+        """Click download and handle re-auth redirect (302 → login page → download)"""
+        for attempt in range(2):
+            try:
+                async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
+                    await click_action()
+                return await download_info.value
+            except Exception as e:
+                if "Timeout" in str(type(e).__name__) or "Timeout" in str(e):
+                    if await self.page.locator(f'div[role="dialog"]').is_hidden():
+                        parsed = urlparse(self.page.url)
+                        if parsed.netloc == "accounts.google.com":
+                            await self.ensure_auth()
+                            if self.page.url.startswith(TAKEOUT_BASEURL):
+                                continue
+                raise
+        raise TimeoutError("Download failed after re-auth attempt")
+
     async def find_most_recent_archive(self):
         for ready_archive_link in self.ready_archive_links:
             await self.page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
@@ -122,10 +147,9 @@ class TakeoutModel:
             report_download_button = self.page.locator(
                 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
             ).first
-            async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                await report_download_button.click(timeout=self.timeout)
-                await self.ensure_auth()
-            download_meta = await download_info.value
+            download_meta = await self.download_with_reauth(
+                lambda: report_download_button.click(timeout=self.timeout)
+            )
             current_archive_timestamp = parse_takeout_timestamp(
                 download_meta.suggested_filename.split("-", 3)[1]
             )
@@ -161,10 +185,9 @@ class TakeoutModel:
 
     async def download_archive_parts(self):
         for i, archive_part in enumerate(self.archive_parts, 1):
-            async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                await archive_part.click(timeout=self.timeout)
-                await self.ensure_auth()
-            download_meta = await download_info.value
+            download_meta = await self.download_with_reauth(
+                lambda: archive_part.click(timeout=self.timeout)
+            )
             for try_n in range(1, 4):
                 try:
                     await download_meta.save_as(
@@ -251,11 +274,20 @@ async def main():
             timeout=TIMEOUT_MILLIS,
         ) as browser:
             print("inited browser")
-            page = await browser.new_page(
-                storage_state={"encoded_value": auth_json_path.read_text()},
-                accept_downloads=True,
-                **fp_settings,
-            )
+            try:
+                page = await asyncio.wait_for(
+                    browser.new_page(
+                        storage_state={"encoded_value": auth_json_path.read_text()},
+                        accept_downloads=True,
+                        **fp_settings,
+                    ),
+                    timeout=TIMEOUT_MILLIS / 1000,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"browser.new_page() timed out after {TIMEOUT_MILLIS}ms. "
+                    f"Check that proxy and browser server are running and BROWSER_SERVER_URL={os.getenv('BROWSER_SERVER_URL', 'ws://host.docker.internal:8082/srv')}"
+                )
             # FF150 about:newtab race condition: sleep 400ms after new_page
             await asyncio.sleep(0.4)
             page.set_default_timeout(TIMEOUT_MILLIS)
