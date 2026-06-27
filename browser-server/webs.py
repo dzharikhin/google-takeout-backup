@@ -67,22 +67,30 @@ async def proxy_websocket(client_websocket: ServerConnection):
 
 async def process_client_message(message):
     modified_message = message
-    if encrypted_ := re.search('"input\\[type=(?:password|email)]","(?:value|text)":("[^"]+")', message):
+    if encrypted_ := re.search('"input\\[type=(?:password|email])[^"]*","(?:value|text)":("[^"]+")', message):
         try:
             val = decrypt(secret_key, bytes.fromhex(encrypted_.group(1).strip('"')))
             modified_message = re.sub(
-                '("input\\[type=(?:password|email)]","(?:value|text)"):("[^"]+")',
+                '("input\\[type=(?:password|email])[^"]*","(?:value|text)"):("[^"]+")',
                 f'\\1:"{val.decode()}"',
                 message,
             )
         except ValueError:
             print(f"failed to parse encrypted {message=}")
-    elif re.search('"method":"newContext",.+"storageState":', message):
-        message_dict = json.loads(message)
-        encoded_state = message_dict["params"]["storageState"]["encoded_value"]
-        val = decrypt(secret_key, bytes.fromhex(encoded_state))
-        message_dict["params"]["storageState"] = json.loads(val)
-        modified_message = json.dumps(message_dict)
+    else:
+        try:
+            message_dict = json.loads(message)
+            if (
+                message_dict.get("method") == "newContext"
+                and "storageState" in message_dict.get("params", {})
+                and "encoded_value" in message_dict["params"]["storageState"]
+            ):
+                encoded_state = message_dict["params"]["storageState"]["encoded_value"]
+                val = decrypt(secret_key, bytes.fromhex(encoded_state))
+                message_dict["params"]["storageState"] = json.loads(val)
+                modified_message = json.dumps(message_dict)
+        except json.JSONDecodeError:
+            pass
 
     if os.getenv("LOG_CLIENT_MESSAGES"):
         print(f"from client: {modified_message=}")
