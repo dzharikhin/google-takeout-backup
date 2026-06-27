@@ -62,8 +62,6 @@ async def main():
                             "color_scheme": "dark" if profile.dark_theme else "light",
                             "timezone_id": browser._timezone if hasattr(browser, '_timezone') else "",
                             "locale": browser._locale if hasattr(browser, '_locale') else "en-US",
-                            "humanize": browser._humanize if hasattr(browser, '_humanize') else True,
-                            "seed": profile.seed if hasattr(profile, 'seed') else 42,
                         }
                         
                         # Save full prefs for reference
@@ -85,8 +83,6 @@ async def main():
                             "color_scheme": "light",
                             "timezone_id": "",
                             "locale": "en-US",
-                            "humanize": True,
-                            "seed": 42,
                         }
                     
                     settings_path = downloads_path / ".fp_settings.json"
