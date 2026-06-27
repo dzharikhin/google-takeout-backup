@@ -58,7 +58,7 @@ class GoogleLoginModel:
 
     @property
     def email_input(self) -> Locator:
-        return self.page.locator("input[type=email]").or_(self.page.locator("input#identifierId"))
+        return self.page.locator("input[type=email]:visible").or_(self.page.locator("input#identifierId:visible"))
 
     @property
     def challenge_option(self) -> Locator:
@@ -92,6 +92,14 @@ class GoogleLoginModel:
         await self.is_refresh_complete()
         parsed = urlparse(self.page.url)
         return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
+
+    async def is_password_challenge(self):
+        await self.is_refresh_complete()
+        parsed = urlparse(self.page.url)
+        if "challenge/pwd" not in parsed.path:
+            return False
+        password_input = self.page.locator("input[type=password]:visible")
+        return await password_input.is_visible(timeout=self.timeout)
 
     async def is_takeout_url(self):
         await self.page.wait_for_url(
@@ -208,6 +216,7 @@ class GoogleLoginModel:
         transition(source=States.start, dest=States.account_chooser, conditions=ref(is_account_chooser), after=ref(select_and_proceed)),
         transition(source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)),
         transition(source=States.start, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
+        transition(source=States.start, dest=States.password_entry, conditions=ref(is_password_challenge), after=ref(submit_password)),
         transition(source=States.start, dest=States.auth_success),
     ))
     async def sign_in(self): ...
