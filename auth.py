@@ -51,6 +51,8 @@ class GoogleLoginModel:
         self.state = "start"
 
     async def is_refresh_complete(self):
+        if self.page.url.startswith(TAKEOUT_BASEURL):
+            return
         progress_bar = self.page.locator('[role="progressbar"]')
         if await progress_bar.count() == 0:
             return
@@ -102,10 +104,15 @@ class GoogleLoginModel:
         return await password_input.is_visible(timeout=self.timeout)
 
     async def is_takeout_url(self):
-        await self.page.wait_for_url(
-            lambda u: u.startswith(TAKEOUT_BASEURL), timeout=self.timeout
-        )
-        return self.page.url.startswith(TAKEOUT_BASEURL)
+        if self.page.url.startswith(TAKEOUT_BASEURL):
+            return True
+        try:
+            await self.page.wait_for_url(
+                lambda u: u.startswith(TAKEOUT_BASEURL), timeout=self.timeout
+            )
+            return True
+        except Exception:
+            return False
 
     async def is_signin(self):
         await self.is_refresh_complete()
@@ -190,11 +197,11 @@ class GoogleLoginModel:
     async def skip_skotp(self): ...
 
     @name_enricher(add_transitions(
+        transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
         transition(source=States.password_entry, dest=States.challenge_skotp, conditions=ref(is_skotp), after=ref(skip_skotp)),
         transition(source=States.password_entry, dest=States.other_challenge_select, conditions=ref(is_mfa_selection), after=ref(select_acceptable_mfa)),
         transition(source=States.password_entry, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
         transition(source=States.password_entry, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
-        transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def submit_password(self): ...
 
@@ -213,11 +220,11 @@ class GoogleLoginModel:
     async def select_and_proceed(self): ...
 
     @name_enricher(add_transitions(
+        transition(source=States.start, dest=States.auth_success, conditions=ref(is_takeout_url)),
         transition(source=States.start, dest=States.account_chooser, conditions=ref(is_account_chooser), after=ref(select_and_proceed)),
         transition(source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)),
         transition(source=States.start, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(skip_address)),
         transition(source=States.start, dest=States.password_entry, conditions=ref(is_password_challenge), after=ref(submit_password)),
-        transition(source=States.start, dest=States.auth_success),
     ))
     async def sign_in(self): ...
 
