@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
@@ -52,7 +51,6 @@ def ref(func):
 
 
 class TakeoutStates:
-    start = AsyncState(name="start")
     on_manage = AsyncState(name="on_manage")
     export_in_progress = AsyncState(name="export_in_progress", final=True)
     backup_fresh = AsyncState(name="backup_fresh", final=True)
@@ -101,12 +99,6 @@ class TakeoutModel:
     async def has_newer_archive(self):
         return self.target_archive is not None
 
-    async def is_download_dialog(self):
-        return not await self.page.locator(f'div[role="dialog"]').is_hidden()
-
-    async def navigate_to_manage(self):
-        await self.page.goto(f"{TAKEOUT_BASEURL}manage")
-
     async def ensure_auth(self):
         auth_model = GoogleLoginModel(
             page=self.page,
@@ -122,23 +114,79 @@ class TakeoutModel:
         )
         await auth_model.sign_in()
 
-    async def download_with_reauth(self, click_action):
-        """Click download and handle re-auth redirect (302 → login page → download)"""
-        for attempt in range(2):
-            try:
-                async with self.page.expect_download(timeout=TIMEOUT_MILLIS * 2) as download_info:
-                    await click_action()
-                return await download_info.value
-            except Exception as e:
-                if "Timeout" in str(type(e).__name__) or "Timeout" in str(e):
-                    if await self.page.locator(f'div[role="dialog"]').is_hidden():
-                        parsed = urlparse(self.page.url)
-                        if parsed.netloc == "accounts.google.com":
-                            await self.ensure_auth()
-                            if self.page.url.startswith(TAKEOUT_BASEURL):
-                                continue
-                raise
-        raise TimeoutError("Download failed after re-auth attempt")
+    async def download_with_reauth(self, element):
+        download_result = None
+        download_ready = asyncio.Event()
+        auth_redirect = asyncio.Event()
+        click_error = None
+
+        def on_download(d):
+            nonlocal download_result
+            download_result = d
+            download_ready.set()
+
+        def on_navigated(frame):
+            if "accounts.google.com" in frame.url:
+                auth_redirect.set()
+
+        self.page.on("download", on_download)
+        self.page.on("framenavigated", on_navigated)
+
+        try:
+            async def do_click():
+                nonlocal click_error
+                try:
+                    await element.click(timeout=TIMEOUT_MILLIS, no_wait_after=True)
+                except Error as e:
+                    click_error = e
+
+            click_task = asyncio.create_task(do_click())
+
+            download_wait = asyncio.create_task(download_ready.wait())
+            auth_wait = asyncio.create_task(auth_redirect.wait())
+
+            done, pending = await asyncio.wait(
+                [download_wait, auth_wait, click_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Error):
+                    pass
+
+            if download_ready.is_set():
+                return download_result
+
+            if auth_redirect.is_set():
+                click_task.cancel()
+                try:
+                    await click_task
+                except (asyncio.CancelledError, Error):
+                    pass
+
+                await self.ensure_auth()
+                if download_ready.is_set():
+                    return download_result
+                await asyncio.wait_for(
+                    download_ready.wait(),
+                    timeout=TIMEOUT_MILLIS * 6 / 1000,
+                )
+                return download_result
+
+            if click_error:
+                raise click_error
+
+            await asyncio.wait_for(
+                download_ready.wait(),
+                timeout=TIMEOUT_MILLIS * 6 / 1000,
+            )
+            return download_result
+
+        finally:
+            self.page.remove_listener("download", on_download)
+            self.page.remove_listener("framenavigated", on_navigated)
 
     async def find_most_recent_archive(self):
         for ready_archive_link in self.ready_archive_links:
@@ -147,9 +195,7 @@ class TakeoutModel:
             report_download_button = self.page.locator(
                 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
             ).first
-            download_meta = await self.download_with_reauth(
-                lambda: report_download_button.click(timeout=self.timeout)
-            )
+            download_meta = await self.download_with_reauth(report_download_button)
             current_archive_timestamp = parse_takeout_timestamp(
                 download_meta.suggested_filename.split("-", 3)[1]
             )
@@ -185,9 +231,7 @@ class TakeoutModel:
 
     async def download_archive_parts(self):
         for i, archive_part in enumerate(self.archive_parts, 1):
-            download_meta = await self.download_with_reauth(
-                lambda: archive_part.click(timeout=self.timeout)
-            )
+            download_meta = await self.download_with_reauth(archive_part)
             for try_n in range(1, 4):
                 try:
                     await download_meta.save_as(
@@ -215,14 +259,6 @@ class TakeoutModel:
         transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
     ))
     async def assess_manage_page(self): ...
-
-    @name_enricher(add_transitions(transition(
-        source=TakeoutStates.start,
-        dest=TakeoutStates.on_manage,
-        before=ref(navigate_to_manage),
-        after=ref(assess_manage_page),
-    )))
-    async def run(self): ...
 
     @name_enricher(add_transitions(
         transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.on_archive, conditions=ref(has_newer_archive), after=ref(clean_downloads_dir)),
@@ -311,11 +347,12 @@ async def main():
                 page.on("response", handle_response)
 
                 print("inited page")
+                await page.goto(f"{TAKEOUT_BASEURL}manage")
                 model = TakeoutModel(page, last_snapshot_timestamp)
-                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.start.name, queued=True, prepare_event="ensure_auth")
+                TakeoutMachine(model, states=TakeoutStates.as_list(), initial="on_manage", queued=True, prepare_event="ensure_auth")
 
                 try:
-                    await model.run()
+                    await model.assess_manage_page()
                     state = await page.context.storage_state()
                     auth_json_path.write_text(state["encoded_value"])
                     print(f"completed with state: {model.state}")
