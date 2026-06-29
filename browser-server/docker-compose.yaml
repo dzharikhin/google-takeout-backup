@@ -16,8 +16,6 @@ services:
       PYTHONUNBUFFERED: "1"
     networks:
       - secure_net
-    depends_on:
-      - browser-virtual
     profiles:
       - "headed"
       - "virtual"

@@ -100,8 +100,9 @@ async def main():
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
                     model = GoogleLoginModel(page=page, timeout=default_timeout)
-                    GoogleLoginMachine(model, states=States.as_list(), initial=States.start, queued=True)
+                    machine = GoogleLoginMachine(model, states=States.as_list(), initial=States.start, queued=True)
                     await model.sign_in()
+                    machine.ensure_auth()
                     print("login script is finished")
                 if page.url.startswith(TAKEOUT_URL):
                     await handle_manual_auth_close(page)
