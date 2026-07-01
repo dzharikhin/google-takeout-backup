@@ -13,7 +13,18 @@ import zipfile
 
 from playwright.async_api import async_playwright, Error, Page
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
-from transitions.extensions.asyncio import AsyncMachine, AsyncState
+from transitions.extensions.asyncio import AsyncMachine, AsyncState, AsyncEvent
+
+
+class CheckingAsyncEvent(AsyncEvent):
+    async def _trigger(self, event_data):
+        result = await super()._trigger(event_data)
+        if not result and event_data.error is None:
+            raise RuntimeError(
+                f"No conditions matched in state '{event_data.model.state}' "
+                f"for event '{self.name}'"
+            )
+        return result
 
 from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
 
@@ -112,7 +123,7 @@ class TakeoutStates:
     selecting_archive = AsyncState(name="selecting_archive", on_enter="find_most_recent_archive")
     requesting_archive = AsyncState(name="requesting_archive", on_enter="request_new_archive", final=True)
     on_archive = AsyncState(name="on_archive", on_enter="handle_archive_page")
-    downloading = AsyncState(name="downloading", on_enter="download_archive_parts", final=True)
+    downloading = AsyncState(name="downloading", on_enter="download_archive_parts")
     complete = AsyncState(name="complete", final=True)
 
     @classmethod
@@ -223,6 +234,7 @@ class TakeoutModel:
         self.archive_parts = await self.page.locator(
             'div[data-download-uri] a[href*="takeout/download"]'
         ).all()
+        return self.archive_parts
 
     async def handle_archive_page(self):
         await self.navigate_to_archive()
@@ -250,30 +262,38 @@ class TakeoutModel:
         await self.page.locator('div[data-jobid] button[aria-label]').click(timeout=self.timeout)
         await self.page.locator('div[data-configure-step] button').click(timeout=self.timeout)
 
-    @name_enricher(add_transitions(
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archive_links)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
-    ))
-    async def assess_manage_page(self): ...
-
-    @name_enricher(add_transitions(
-        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.on_archive, conditions=ref(has_newer_archive), after=ref(clean_downloads_dir)),
-        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.requesting_archive),
-    ))
-    async def evaluate_archives(self): ...
-
     @name_enricher(add_transitions(transition(
-        source=TakeoutStates.complete,
+        source=TakeoutStates.downloading,
         dest=TakeoutStates.complete,
     )))
     async def finish_download(self): ...
 
+    @name_enricher(add_transitions(transition(
+        source=TakeoutStates.on_archive,
+        dest=TakeoutStates.downloading,
+        before=ref(clean_downloads_dir),
+        after=ref(finish_download),
+    )))
+    async def start_download(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.on_archive, conditions=ref(has_newer_archive), after=ref(start_download)),
+        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.requesting_archive),
+    ))
+    async def select_archive(self): ...
+
+    @name_enricher(add_transitions(
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archive_links), after=ref(select_archive)),
+        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
+    ))
+    async def assess_manage_page(self): ...
+
 
 @with_model_definitions
 class TakeoutMachine(AsyncMachine):
-    pass
+    event_cls = CheckingAsyncEvent
 
 
 def parse_takeout_timestamp(val):
