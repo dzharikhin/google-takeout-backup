@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from urllib.parse import parse_qs, urlparse
 
@@ -61,17 +62,27 @@ class GoogleLoginModel:
         self.password_env = password_env
         self.state = "start"
 
+    async def wait_for_page_load(self):
+        logging.debug("waiting for page load state")
+        await self.page.wait_for_load_state(timeout=self.timeout)
+        logging.debug("page is in load state, proceeding")
+
     async def is_refresh_complete(self):
+        logging.debug("is_refresh_complete")
         if self.page.url.startswith(TAKEOUT_BASEURL):
+            logging.debug("is_refresh_complete:no refresh bar on takeout screen")
             return
         progress_bar = self.page.locator('[role="progressbar"]')
         if await progress_bar.count() == 0:
+            logging.debug("is_refresh_complete:no refresh bar found")
             return
         try:
             await expect(progress_bar).to_have_attribute("aria-hidden", "true", timeout=self.timeout)
         except AssertionError:
             if self.page.url.startswith(TAKEOUT_BASEURL):
+                logging.debug("is_refresh_complete: refresh bar has aria-hidden=false, but we're on takeout, ok")
                 return
+            logging.debug("is_refresh_complete: refresh bar has aria-hidden=false, raising")
             raise
 
     @property
@@ -91,35 +102,67 @@ class GoogleLoginModel:
         return self.page.locator("div[data-button-type=multipleChoiceIdentifier]")
 
     async def is_skotp(self):
+        logging.debug("is_skotp")
         await self.is_refresh_complete()
-        return await self.default_mfa_input.is_visible(timeout=self.timeout)
+        try:
+            await expect(self.default_mfa_input).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_skotp:{e} returning false")
+            return False
 
-    async def is_account_chooser(self):
+    async def is_on_account_choose_form(self):
+        logging.debug("is_on_account_choose_form")
         await self.is_refresh_complete()
-        return await self.account_chooser_item.is_visible(timeout=self.timeout)
+        try:
+            await expect(self.account_chooser_item).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_on_account_choose_form:{e} returning false")
+            return False
 
     async def is_mfa_selection(self):
+        logging.debug("is_mfa_selection")
         await self.is_refresh_complete()
-        await self.challenge_option.is_visible(timeout=self.timeout)
+        try:
+            await expect(self.challenge_option).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_mfa_selection:{e} returning false")
+            return False
 
     async def is_restore(self):
+        logging.debug("is_restore")
         await self.is_refresh_complete()
-        await self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]').is_visible(timeout=self.timeout)
+        try:
+            await expect(self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]')).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_restore:{e} returning false")
+            return False
 
-    async def is_address_entry(self):
+    async def is_on_address_entry_form(self):
+        logging.debug("is_on_address_entry_form")
         await self.is_refresh_complete()
         parsed = urlparse(self.page.url)
         return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
 
     async def is_password_challenge(self):
+        logging.debug("is_password_challenge")
         await self.is_refresh_complete()
         parsed = urlparse(self.page.url)
         if "challenge/pwd" not in parsed.path:
             return False
         password_input = self.page.locator("input[type=password]:visible")
-        return await password_input.is_visible(timeout=self.timeout)
+        try:
+            await expect(password_input).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_password_challenge:{e} returning false")
+            return False
 
     async def is_takeout_url(self):
+        logging.debug("is_takeout_url")
         if not self.page.url.startswith(TAKEOUT_BASEURL):
             return False
         try:
@@ -127,12 +170,19 @@ class GoogleLoginModel:
                 lambda u: not u.startswith(TAKEOUT_BASEURL), timeout=self.timeout
             )
             return False
-        except PlaywrightTimeoutError:
+        except PlaywrightTimeoutError as e:
+            logging.debug(f"is_takeout_url:{e} returning true")
             return True
 
     async def is_signin(self):
+        logging.debug("is_signin")
         await self.is_refresh_complete()
-        return await self.email_input.is_visible(timeout=self.timeout)
+        try:
+            await expect(self.email_input).to_be_visible(timeout=self.timeout)
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_signin:{e} returning true")
+            return False
 
     async def select_account(self):
         await self.account_chooser_item.click(timeout=self.timeout)
@@ -211,7 +261,7 @@ class GoogleLoginModel:
     async def skip_skotp(self): ...
 
     @name_enricher(add_transitions(
-        transition(source=States.offer_to_restore, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(leave_address)),
+        transition(source=States.offer_to_restore, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
         transition(source=States.offer_to_restore, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def skip_restoration(self): ...
@@ -221,7 +271,7 @@ class GoogleLoginModel:
         transition(source=States.password_entry, dest=States.challenge_skotp, conditions=ref(is_skotp), after=ref(skip_skotp)),
         transition(source=States.password_entry, dest=States.other_challenge_select, conditions=ref(is_mfa_selection), after=ref(select_acceptable_mfa)),
         transition(source=States.password_entry, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
-        transition(source=States.password_entry, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(leave_address)),
+        transition(source=States.password_entry, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
     ))
     async def submit_password(self): ...
 
@@ -242,16 +292,16 @@ class GoogleLoginModel:
 
     @name_enricher(add_transitions(
         transition(source=States.start, dest=States.auth_success, conditions=ref(is_takeout_url)),
-        transition(source=States.start, dest=States.account_chooser, conditions=ref(is_account_chooser), after=ref(select_and_proceed)),
+        transition(source=States.start, dest=States.account_chooser, conditions=ref(is_on_account_choose_form), after=ref(select_and_proceed)),
         transition(source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)),
-        transition(source=States.start, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(leave_address)),
+        transition(source=States.start, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
         transition(source=States.start, dest=States.password_entry, conditions=ref(is_password_challenge), after=ref(submit_password)),
     ))
     async def sign_in(self): ...
 
     @name_enricher(add_transitions(
         transition(source=States.challenge_confirm, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
-        transition(source=States.challenge_confirm, dest=States.address_entry, conditions=ref(is_address_entry), after=ref(leave_address)),
+        transition(source=States.challenge_confirm, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
         transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
     ))
     async def confirm_mfa(self): ...
@@ -263,6 +313,8 @@ class GoogleLoginMachine(AsyncMachine):
 
     def __init__(self, model, **kwargs):
         self._auth_model = model
+        # if "prepare_event" not in kwargs:
+        #     kwargs["prepare_event"] = ref(GoogleLoginModel.wait_for_page_load)
         super().__init__(model, **kwargs)
 
     def ensure_auth(self):

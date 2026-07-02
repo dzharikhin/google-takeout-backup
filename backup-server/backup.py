@@ -367,7 +367,7 @@ async def main():
                 logging.info("inited page")
                 await page.goto(f"{TAKEOUT_BASEURL}manage")
                 model = TakeoutModel(page, last_snapshot_timestamp)
-                TakeoutMachine(model, states=TakeoutStates.as_list(), initial="on_manage", queued=True, prepare_event="ensure_auth")
+                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.on_manage, queued=True, prepare_event=ref(TakeoutModel.ensure_auth))
 
                 try:
                     await model.assess_manage_page()
