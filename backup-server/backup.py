@@ -68,7 +68,7 @@ def ref(func):
 
 
 class InterceptDownload:
-    def __init__(self, page, url_pattern, *, timeout):
+    def __init__(self, page: Page, url_pattern, *, timeout):
         self.page = page
         self.url_pattern = url_pattern
         self.timeout = timeout
@@ -102,8 +102,8 @@ class InterceptDownload:
             return None
         return self._url.split("/")[-1].split("?")[0]
 
-    async def save_as(self, path):
-        resp = await self.page.context.request.get(self.url)
+    async def save_as(self, path, *, timeout: float = TIMEOUT_MILLIS):
+        resp = await self.page.context.request.get(self.url, timeout=timeout)
         try:
             path.write_bytes(await resp.body())
         finally:
@@ -247,7 +247,8 @@ class TakeoutModel:
                     await download_meta.save_as(
                         self.target_archive_download_path.joinpath(
                             download_meta.suggested_filename
-                        )
+                        ),
+                        timeout=(DOWNLOAD_TIMEOUT_MILLIS / 2),
                     )
                     break
                 except Error:

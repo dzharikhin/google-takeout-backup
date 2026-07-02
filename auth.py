@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from urllib.parse import parse_qs, urlparse
@@ -55,9 +54,10 @@ class States:
 
 
 class GoogleLoginModel:
-    def __init__(self, page: Page, timeout, email_env="USER_E", password_env="USER_P"):
+    def __init__(self, page: Page, timeout, mfa_confirm_timeout = None, email_env="USER_E", password_env="USER_P"):
         self.page = page
         self.timeout = timeout
+        self.mfa_confirm_timeout = mfa_confirm_timeout or timeout * 3
         self.email_env = email_env
         self.password_env = password_env
         self.state = "start"
@@ -144,8 +144,14 @@ class GoogleLoginModel:
     async def is_on_address_entry_form(self):
         logging.debug("is_on_address_entry_form")
         await self.is_refresh_complete()
-        parsed = urlparse(self.page.url)
-        return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
+        try:
+            await self.page.wait_for_url(
+                lambda u: (parsed := urlparse(u), "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress"))[-1], timeout=self.timeout
+            )
+            return True
+        except (PlaywrightTimeoutError, AssertionError) as e:
+            logging.debug(f"is_on_address_entry_form:{e} returning false")
+            return False
 
     async def is_password_challenge(self):
         logging.debug("is_password_challenge")
@@ -235,12 +241,8 @@ class GoogleLoginModel:
     async def handle_challenge_confirm(self):
         text = await self.page.locator("body").inner_text()
         print(text)
-        await asyncio.wait({
-            asyncio.create_task(self.is_restore()),
-            asyncio.create_task(self.page.wait_for_url(lambda u: u.startswith(TAKEOUT_BASEURL), timeout=self.timeout, wait_until="domcontentloaded"))
-        }, return_when=asyncio.FIRST_COMPLETED)
+        await self.page.wait_for_url(lambda u: "signin/challenge/dp" not in u, timeout=self.mfa_confirm_timeout, wait_until="domcontentloaded")
         await self.confirm_mfa()
-        await self.page.wait_for_url(lambda u: not u.startswith(TAKEOUT_BASEURL), timeout=self.timeout, wait_until="domcontentloaded")
 
     @name_enricher(add_transitions(
         transition(source=States.address_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
