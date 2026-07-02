@@ -2,12 +2,16 @@
 
 ## Architecture
 
-Two-container Docker Compose app for automated Google Photos Takeout backup.
+Two-container Docker Compose app for automated Google Photos Takeout backup, designed to run browser and backup on separate hosts.
 
-- **browser-server/** — Runs Chromium via `npx playwright launch-server`, exposes a WebSocket. An ECIES-encrypted reverse proxy (`webs.py`) sits in front, protecting credentials in transit. Profiles: `headless` (bot-detectable), `virtual` (xvfb, recommended), `headed` (real display, debug), `manual` (auth only).
-- **backup-server/** — Connects to the browser WebSocket, drives the Takeout UI via Playwright, downloads/processes archives using `gpth`.
+- **browser-server/** — Runs **Firefox** via [`invisible-playwright`](https://github.com/feder-cr/invisible_playwright) (stealth, anti-fingerprint), exposes a WebSocket. An ECIES-encrypted reverse proxy (`webs.py`) sits in front, protecting credentials in transit. Runs profiles: `virtual` (xvfb, recommended), `headed` (real display, debug), `manual` (auth only).
+- **backup-server/** — Connects to the browser WebSocket, drives the Takeout UI via Playwright, downloads/processes archives. Designed to run on a separate host, connecting to `BROWSER_SERVER_URL`.
 
-The proxy (`browser-server/webs.py`) intercepts Playwright CDP messages to encrypt/decrypt `storageState` and password values. Auth state is stored as `.auth_encoded` (ECIES ciphertext).
+The proxy (`browser-server/webs.py`) intercepts WebSocket messages to encrypt/decrypt `storageState` and password values. Auth state is stored as `.auth_encoded` (ECIES ciphertext).
+
+Both parts use **state machines** (`transitions` library) to drive the authentication and backup flows:
+- `GoogleLoginMachine` in `auth.py` — Google login flow
+- `TakeoutMachine` in `backup-server/backup.py` — Takeout UI navigation and archive download
 
 ## Source files
 
@@ -21,10 +25,12 @@ The proxy (`browser-server/webs.py`) intercepts Playwright CDP messages to encry
 
 ## Key conventions
 
+- **4-space indentation.** Python code uses 4 spaces per indentation level.
 - **UI selectors are locale-dependent.** `keys_*.csv` maps logical names to visible button/label text (e.g. `export.ready.label` → `Завершено`). CSS classes are obfuscated and change. Set `GOOGLE_LANG` env var to `RU` or `EN` to pick the right file.
 - **`auth.py` uses `transitions` state machine** with `@with_model_definitions` and `@name_enricher` decorators — the transition graph is defined declaratively via `add_transitions(transition(...))` on methods, not via the usual `Machine` constructor.
 - **Dependencies are managed by `uv`** via `pyproject.toml` dependency groups (`proxy`, `manual-auth`, `backup`, `dev`), not separate packages. Install with `uv sync --group <name>`.
 - **`backup-server` uses a dedicated Dockerfile** (instead of runtime entrypoint script) that bakes in dependencies at build time using `uv sync --group backup`, downloads `gpth` binary, and `COPY`s all source files.
+- **Do not use `is_{state_name}` in method names for state machines.** The `transitions` library auto-generates `is_<state_name>()` methods on the model for each state. If a condition method has the same name as a state (e.g., states `account_chooser`, `address_entry` and methods `is_account_chooser()`, `is_address_entry()`), the auto-generated method shadows the condition method, causing it to never be called. Use alternative naming like `is_choosing_account()`, `has_account_chooser()`, or `on_account_chooser_page()` instead.
 
 ## Running
 
@@ -51,9 +57,9 @@ The Playwright version is declared in root `.env` (`PLAYWRIGHT_VERSION`) and pin
 
 Browser-server proxy keys are generated on start by default. After restart, `.auth_encoded` and `ENCODED_PASS` must be re-encoded with the new public key (URL printed in proxy logs). For stable keys, set `SK`/`PK` env vars.
 
-## Planned: Chromium → Firefox migration
+## Encryption key rotation
 
-See `backup_integration.md` for the plan to switch from Chromium to Firefox via `invisible-playwright` (anti-fingerprint, human-like mouse). Current code still uses Chromium.
+Browser-server proxy keys are generated on start by default. After restart, `.auth_encoded` and `ENCODED_PASS` must be re-encoded with the new public key (URL printed in proxy logs). For stable keys, set `SK`/`PK` env vars.
 
 ## Testing
 
