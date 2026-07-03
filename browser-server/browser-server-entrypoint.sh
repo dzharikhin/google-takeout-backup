@@ -9,6 +9,7 @@ case "${COMPOSE_PROFILES}" in
 esac
 
 mkdir -p /app/browser-local-storage
+mkdir -p /app/browser-downloads
 
 python /app/generate_launch_config.py
 exec npx -y playwright@${PLAYWRIGHT_VERSION} launch-server --browser=firefox --config /tmp/launch-params.json

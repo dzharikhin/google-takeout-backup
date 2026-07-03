@@ -1,7 +1,7 @@
-import asyncio
 import json
 import os
 import pathlib
+
 from invisible_playwright.config import get_default_stealth_prefs
 from invisible_playwright.download import ensure_binary
 
@@ -17,6 +17,10 @@ prefs = get_default_stealth_prefs(
     timezone=fp_timezone,
     humanize=fp_humanize,
 )
+
+prefs["browser.download.folderList"] = 2
+prefs["browser.download.dir"] = str(downloads_path)
+prefs["browser.download.useDownloadDir"] = True
 
 executable_path = ensure_binary()
 
