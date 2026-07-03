@@ -33,12 +33,10 @@ async def proxy_websocket(client_websocket: ServerConnection):
         max_retries = 10
         retry_delay = 2.0
         backend_websocket = None
-        
+
         for attempt in range(1, max_retries + 1):
             try:
-                backend_websocket = await websockets.connect(
-                    backend_uri, max_size=MAX_MESSAGE_SIZE
-                )
+                backend_websocket = await websockets.connect(backend_uri, max_size=MAX_MESSAGE_SIZE)
                 break
             except (websockets.exceptions.ConnectionRefused, OSError) as e:
                 if attempt < max_retries:
@@ -47,7 +45,7 @@ async def proxy_websocket(client_websocket: ServerConnection):
                     retry_delay = min(retry_delay * 2, 30)
                 else:
                     raise
-        
+
         async with backend_websocket:
             print(f"connected to {backend_uri=}")
 
@@ -103,9 +101,7 @@ async def process_backend_message(message):
         message_dict = json.loads(message)
         if set(message_dict.get("result", {}).keys()) == set(["cookies", "origins"]):
             state = json.dumps(message_dict["result"])
-            message_dict["result"] = {
-                "encoded_value": encrypt(public_key, state.encode()).hex()
-            }
+            message_dict["result"] = {"encoded_value": encrypt(public_key, state.encode()).hex()}
         modified_message = json.dumps(message_dict)
     if os.getenv("LOG_BACKEND_MESSAGES"):
         print(f"from backend: {modified_message=}")
@@ -115,13 +111,9 @@ async def process_backend_message(message):
 async def main():
     port = int(os.getenv("PROXY_LISTEN_PORT", "8080"))
 
-    async with websockets.serve(
-        proxy_websocket, "0.0.0.0", port, max_size=MAX_MESSAGE_SIZE
-    ) as server:
+    async with websockets.serve(proxy_websocket, "0.0.0.0", port, max_size=MAX_MESSAGE_SIZE) as server:
         print(f"started at {port=}")
-        print(
-            f"Encode backup params with public key: https://dzharikhin.github.io/ecies/?pk={public_key}"
-        )
+        print(f"Encode backup params with public key: https://dzharikhin.github.io/ecies/?pk={public_key}")
         await server.serve_forever()
 
 

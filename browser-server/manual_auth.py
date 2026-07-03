@@ -22,7 +22,7 @@ from invisible_playwright.launcher import _CHROME_W, _CHROME_H, _TASKBAR_H
 
 
 async def main():
-    print(f"display: {os.getenv("DISPLAY")}")
+    print(f"display: {os.getenv('DISPLAY')}")
     global manual_auth_wait
     manual_auth_wait = [1]
 
@@ -38,17 +38,17 @@ async def main():
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_dir = pathlib.Path(tmp)
-                    
+
                     # Save storage_state
                     file_path = tmp_dir.joinpath("file.json")
                     await page.context.storage_state(path=file_path)
                     print()
                     print(file_path.read_text())
                     print()
-                    
+
                     # Save fingerprint settings for backup
                     # The browser variable is still in scope here (inside async with)
-                    if browser and hasattr(browser, '_profile'):
+                    if browser and hasattr(browser, "_profile"):
                         profile = browser._profile
                         fp_settings = {
                             "viewport": {
@@ -61,16 +61,16 @@ async def main():
                             },
                             "device_scale_factor": profile.screen.dpr,
                             "color_scheme": "dark" if profile.dark_theme else "light",
-                            "timezone_id": browser._timezone if hasattr(browser, '_timezone') else "",
-                            "locale": browser._locale if hasattr(browser, '_locale') else "en-US",
+                            "timezone_id": browser._timezone if hasattr(browser, "_timezone") else "",
+                            "locale": browser._locale if hasattr(browser, "_locale") else "en-US",
                         }
-                        
+
                         # Save full prefs for reference
                         prefs = get_default_stealth_prefs(
-                            seed=profile.seed if hasattr(profile, 'seed') else 42,
-                            locale=browser._locale if hasattr(browser, '_locale') else "en-US",
-                            timezone=browser._timezone if hasattr(browser, '_timezone') else "",
-                            humanize=browser._humanize if hasattr(browser, '_humanize') else True,
+                            seed=profile.seed if hasattr(profile, "seed") else 42,
+                            locale=browser._locale if hasattr(browser, "_locale") else "en-US",
+                            timezone=browser._timezone if hasattr(browser, "_timezone") else "",
+                            humanize=browser._humanize if hasattr(browser, "_humanize") else True,
                         )
                         prefs_path = downloads_path / ".fp_prefs.json"
                         prefs_path.write_text(json.dumps(prefs, indent=2))
@@ -85,7 +85,7 @@ async def main():
                             "timezone_id": "",
                             "locale": "en-US",
                         }
-                    
+
                     settings_path = downloads_path / ".fp_settings.json"
                     settings_path.write_text(json.dumps(fp_settings, indent=2))
                     print(f"Saved fingerprint settings to {settings_path}")
@@ -96,7 +96,9 @@ async def main():
             await page.goto(TAKEOUT_URL)
             if headed:
                 page.on("close", handle_manual_auth_close)
-                print(f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful")
+                print(
+                    f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successful"
+                )
             else:
                 print(f"{headless_mode=}: executing automatic login script")
                 if page.url.startswith("https://accounts.google.com/v3/signin"):
@@ -111,12 +113,8 @@ async def main():
             try:
                 if page and not page.is_closed():
                     downloads_path.joinpath(f"error_url.txt").write_text(page.url)
-                    downloads_path.joinpath(f"error_html.html").write_text(
-                        await page.content()
-                    )
-                    await page.screenshot(
-                        path=downloads_path.joinpath(f"error_page_screenshot.jpg")
-                    )
+                    downloads_path.joinpath(f"error_html.html").write_text(await page.content())
+                    await page.screenshot(path=downloads_path.joinpath(f"error_page_screenshot.jpg"))
             except Exception as e:
                 print(f"failed to collect diagnostic info: {e}", file=sys.stderr)
             raise

@@ -9,41 +9,28 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import zipfile
 
-from playwright.async_api import async_playwright, Error, Page
+from playwright.async_api import async_playwright, Error, Page, TimeoutError as PlaywrightTimeoutError
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 from transitions.extensions.asyncio import AsyncMachine, AsyncState, AsyncEvent
-
-
-class CheckingAsyncEvent(AsyncEvent):
-    async def _trigger(self, event_data):
-        result = await super()._trigger(event_data)
-        if not result and event_data.error is None:
-            raise RuntimeError(
-                f"No conditions matched in state '{event_data.model.state}' "
-                f"for event '{self.name}'"
-            )
-        return result
 
 from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
     stream=sys.stdout,
     force=True,
 )
 logging.getLogger("transitions.core").setLevel(logging.ERROR)
 
-BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(
-    hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12"))
-)
+BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12")))
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
 DOWNLOAD_TIMEOUT_MILLIS = 3_600_000
 
 auth_json_path = pathlib.Path(".auth_encoded")
-
 downloads_path = pathlib.Path("downloads")
 backup_path = pathlib.Path("photos")
 timestamp_path = backup_path.joinpath(".timestamp")
@@ -51,6 +38,80 @@ text_labels_source = pathlib.Path(f"keys_{os.getenv('GOOGLE_LANG', 'RU')}.csv")
 
 with text_labels_source.open(mode="rt") as labels_data:
     text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
+
+
+class InterceptDownload:
+    def __init__(self, page: Page, url_pattern, *, timeout):
+        self.page = page
+        self.url_pattern = "**/takeout/download**"
+        self.timeout = timeout
+        self._url = None
+        self._event = asyncio.Event()
+        self._handler = None
+
+    async def __aenter__(self):
+        async def handle_route(route):
+            logging.info(f"Intercepted request: {route.request.url}")
+            try:
+                resp = await route.fetch(max_redirects=0)
+                if 300 <= resp.status < 400:
+                    self._url = resp.headers.get("location")
+                    logging.info(f"Redirect to CDN URL: {self._url}")
+                else:
+                    self._url = resp.url
+                    logging.info(f"Direct download URL: {self._url}")
+                self._event.set()
+                await route.fulfill(status=204)
+            except Exception as e:
+                logging.error(f"route.fetch() failed: {e}")
+                raise
+
+        self._handler = handle_route
+        await self.page.route(self.url_pattern, self._handler)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.page.unroute(self.url_pattern, self._handler)
+        return False
+
+    async def wait_for_url(self):
+        await asyncio.wait_for(self._event.wait(), timeout=self.timeout / 1000)
+
+    @property
+    def url(self):
+        return self._url
+
+    @property
+    def suggested_filename(self):
+        if not self._url:
+            return None
+        parsed = urllib.parse.urlparse(self._url)
+        path_parts = parsed.path.split("/")
+        filename = path_parts[-1] if path_parts else ""
+        return filename.split("?")[0]
+
+    async def save_as(self, path, *, timeout: float = TIMEOUT_MILLIS):
+        if not self._url:
+            raise RuntimeError("URL not set")
+        resp = await self.page.context.request.get(self._url, timeout=timeout)
+        try:
+            path.write_bytes(await resp.body())
+        finally:
+            await resp.dispose()
+
+    async def cancel(self):
+        pass
+
+    async def delete(self):
+        pass
+
+
+class CheckingAsyncEvent(AsyncEvent):
+    async def _trigger(self, event_data):
+        result = await super()._trigger(event_data)
+        if not result and event_data.error is None:
+            raise RuntimeError(f"No conditions matched in state '{event_data.model.state}' for event '{self.name}'")
+        return result
 
 
 def name_enricher(outer):
@@ -64,56 +125,7 @@ def name_enricher(outer):
 
 
 def ref(func):
-    return getattr(func, 'original_name', None) or func.__name__
-
-
-class InterceptDownload:
-    def __init__(self, page: Page, url_pattern, *, timeout):
-        self.page = page
-        self.url_pattern = url_pattern
-        self.timeout = timeout
-        self._url = None
-        self._response_cm = None
-        self._response_info = None
-
-    async def __aenter__(self):
-        self._response_cm = self.page.expect_response(
-            self.url_pattern, timeout=self.timeout
-        )
-        self._response_info = await self._response_cm.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        try:
-            await self._response_cm.__aexit__(exc_type, exc_val, exc_tb)
-            if exc_type is None:
-                self._url = (await self._response_info.value).url
-        except BaseException:
-            raise
-        return False
-
-    @property
-    def url(self):
-        return self._url
-
-    @property
-    def suggested_filename(self):
-        if not self._url:
-            return None
-        return self._url.split("/")[-1].split("?")[0]
-
-    async def save_as(self, path, *, timeout: float = TIMEOUT_MILLIS):
-        resp = await self.page.context.request.get(self.url, timeout=timeout)
-        try:
-            path.write_bytes(await resp.body())
-        finally:
-            await resp.dispose()
-
-    async def cancel(self):
-        pass
-
-    async def delete(self):
-        pass
+    return getattr(func, "original_name", None) or func.__name__
 
 
 class TakeoutStates:
@@ -144,7 +156,7 @@ class TakeoutModel:
         self.state = "start"
 
     async def is_export_running(self):
-        return not await self.page.locator('button[data-job-id]').is_hidden(timeout=self.timeout)
+        return not await self.page.locator("button[data-job-id]").is_hidden(timeout=self.timeout)
 
     async def is_backup_fresh(self):
         if not self.last_snapshot_timestamp:
@@ -182,37 +194,50 @@ class TakeoutModel:
         machine.ensure_auth()
 
     async def download_with_reauth(self, element):
-        async with InterceptDownload(
-            self.page,
-            url_pattern="**/takeout-download.usercontent.google.com/**",
-            timeout=DOWNLOAD_TIMEOUT_MILLIS,
-        ) as download:
-            try:
-                await element.click(timeout=TIMEOUT_MILLIS, no_wait_after=True)
-            except Error as e:
-                logging.info("click error (may be expected if auth redirect): %s", e)
-            await self.ensure_auth()
-            logging.info(f"auth on download completed")
+        archive_url = None
+        for attempt in range(2):
+            if archive_url is None:
+                archive_url = self.page.url
+            async with InterceptDownload(
+                self.page,
+                url_pattern="**/takeout/download**",
+                timeout=TIMEOUT_MILLIS * 2,
+            ) as download:
+                try:
+                    try:
+                        await element.click(timeout=TIMEOUT_MILLIS, no_wait_after=True)
+                        logging.debug("Click completed, waiting for download URL")
+                    except (Error, PlaywrightTimeoutError) as e:
+                        logging.debug(f"Click completed with error {e}, ignoring and waiting for download URL")
 
-        return download
+                    await download.wait_for_url()
+                    logging.debug("Download URL intercepted successfully, returning")
+                    return download
+                except (Error, TimeoutError, PlaywrightTimeoutError) as e:
+                    logging.debug(f"Download interception failed: {e}")
+                    if attempt == 0:
+                        logging.info("Retrying after reauth")
+                        await self.ensure_auth()
+                        if archive_url:
+                            await self.page.goto(archive_url)
+                            await self.ensure_auth()
+                        archive_url = None
+                        continue
+                    raise
+        raise RuntimeError("Unreachable")
 
     async def find_most_recent_archive(self):
         for ready_archive_link in self.ready_archive_links:
             await self.page.goto(f"{TAKEOUT_BASEURL}{ready_archive_link}")
             await self.ensure_auth()
+
             report_download_button = self.page.locator(
                 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
             ).first
-            download_meta = await self.download_with_reauth(report_download_button)
-            current_archive_timestamp = parse_takeout_timestamp(
-                download_meta.suggested_filename.split("-", 3)[1]
-            )
+            download = await self.download_with_reauth(report_download_button)
+            current_archive_timestamp = parse_takeout_timestamp(download.suggested_filename.split("-", 3)[1])
             logging.info(f"current archive timestamp: {current_archive_timestamp}")
-            await download_meta.cancel()
-            if (
-                not self.last_snapshot_timestamp
-                or current_archive_timestamp > self.last_snapshot_timestamp
-            ):
+            if not self.last_snapshot_timestamp or current_archive_timestamp > self.last_snapshot_timestamp:
                 self.target_archive = ready_archive_link
                 self.target_archive_timestamp = current_archive_timestamp
                 return
@@ -223,17 +248,13 @@ class TakeoutModel:
                 f.unlink()
             elif f.is_dir():
                 shutil.rmtree(f)
-        self.target_archive_download_path = downloads_path.joinpath(
-            self.target_archive.split("/")[-1]
-        )
+        self.target_archive_download_path = downloads_path.joinpath(self.target_archive.split("/")[-1])
         self.target_archive_download_path.mkdir()
 
     async def navigate_to_archive(self):
         await self.page.goto(f"{TAKEOUT_BASEURL}{self.target_archive}")
         await self.ensure_auth()
-        self.archive_parts = await self.page.locator(
-            'div[data-download-uri] a[href*="takeout/download"]'
-        ).all()
+        self.archive_parts = await self.page.locator('div[data-download-uri] a[href*="takeout/download"]').all()
         return self.archive_parts
 
     async def handle_archive_page(self):
@@ -241,54 +262,78 @@ class TakeoutModel:
 
     async def download_archive_parts(self):
         for i, archive_part in enumerate(self.archive_parts, 1):
-            download_meta = await self.download_with_reauth(archive_part)
+            download = await self.download_with_reauth(archive_part)
             for try_n in range(1, 4):
                 try:
-                    await download_meta.save_as(
-                        self.target_archive_download_path.joinpath(
-                            download_meta.suggested_filename
-                        ),
-                        timeout=(DOWNLOAD_TIMEOUT_MILLIS / 2),
+                    await download.save_as(
+                        self.target_archive_download_path.joinpath(download.suggested_filename),
+                        timeout=DOWNLOAD_TIMEOUT_MILLIS / 3,
                     )
                     break
                 except Error:
                     if try_n >= 3:
                         raise
                     logging.info(f"retrying download {i} after {try_n}")
-            await download_meta.delete()
+            await download.delete()
             logging.info(f"downloaded {i}/{len(self.archive_parts)} parts")
 
     async def request_new_archive(self):
         await self.page.goto(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
-        await self.page.locator('div[data-jobid] button[aria-label]').click(timeout=self.timeout)
-        await self.page.locator('div[data-configure-step] button').click(timeout=self.timeout)
+        await self.page.locator("div[data-jobid] button[aria-label]").click(timeout=self.timeout)
+        await self.page.locator("div[data-configure-step] button").click(timeout=self.timeout)
 
-    @name_enricher(add_transitions(transition(
-        source=TakeoutStates.downloading,
-        dest=TakeoutStates.complete,
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=TakeoutStates.downloading,
+                dest=TakeoutStates.complete,
+            )
+        )
+    )
     async def finish_download(self): ...
 
-    @name_enricher(add_transitions(transition(
-        source=TakeoutStates.on_archive,
-        dest=TakeoutStates.downloading,
-        before=ref(clean_downloads_dir),
-        after=ref(finish_download),
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=TakeoutStates.on_archive,
+                dest=TakeoutStates.downloading,
+                before=ref(clean_downloads_dir),
+                after=ref(finish_download),
+            )
+        )
+    )
     async def start_download(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.on_archive, conditions=ref(has_newer_archive), after=ref(start_download)),
-        transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.requesting_archive),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=TakeoutStates.selecting_archive,
+                dest=TakeoutStates.on_archive,
+                conditions=ref(has_newer_archive),
+                after=ref(start_download),
+            ),
+            transition(source=TakeoutStates.selecting_archive, dest=TakeoutStates.requesting_archive),
+        )
+    )
     async def select_archive(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.selecting_archive, conditions=ref(has_ready_archive_links), after=ref(select_archive)),
-        transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=TakeoutStates.on_manage, dest=TakeoutStates.export_in_progress, conditions=ref(is_export_running)
+            ),
+            transition(
+                source=TakeoutStates.on_manage, dest=TakeoutStates.backup_fresh, conditions=ref(is_backup_fresh)
+            ),
+            transition(
+                source=TakeoutStates.on_manage,
+                dest=TakeoutStates.selecting_archive,
+                conditions=ref(has_ready_archive_links),
+                after=ref(select_archive),
+            ),
+            transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
+        )
+    )
     async def assess_manage_page(self): ...
 
 
@@ -323,9 +368,9 @@ async def main():
         fp_settings = {}
         if fp_settings_path.exists():
             fp_settings = json.loads(fp_settings_path.read_text())
-        
+
         async with await playwright.firefox.connect(
-            os.getenv("BROWSER_SERVER_URL", f"ws://host.docker.internal:8082/srv"),
+            os.getenv("BROWSER_SERVER_URL", "ws://host.docker.internal:8082/srv"),
             timeout=TIMEOUT_MILLIS,
         ) as browser:
             logging.info("inited browser")
@@ -333,7 +378,7 @@ async def main():
                 page = await asyncio.wait_for(
                     browser.new_page(
                         storage_state={"encoded_value": auth_json_path.read_text()},
-                        accept_downloads=True,
+                        accept_downloads=False,
                         **fp_settings,
                     ),
                     timeout=TIMEOUT_MILLIS / 1000,
@@ -343,7 +388,6 @@ async def main():
                     f"browser.new_page() timed out after {TIMEOUT_MILLIS}ms. "
                     f"Check that proxy and browser server are running and BROWSER_SERVER_URL={os.getenv('BROWSER_SERVER_URL', 'ws://host.docker.internal:8082/srv')}"
                 )
-            # FF150 about:newtab race condition: sleep 400ms after new_page
             await asyncio.sleep(0.4)
             page.set_default_timeout(TIMEOUT_MILLIS)
             async with page:
@@ -358,9 +402,11 @@ async def main():
 
                 async def handle_request(request):
                     network.append(f"Request: {request.method} {request.url}")
+                    logging.debug(f"Request: {request.method} {request.url}")
 
                 async def handle_response(response):
                     network.append(f"Response: {response.status} {response.url}")
+                    logging.debug(f"Response: {response.status} {response.url}")
 
                 page.on("request", handle_request)
                 page.on("response", handle_response)
@@ -368,42 +414,38 @@ async def main():
                 logging.info("inited page")
                 await page.goto(f"{TAKEOUT_BASEURL}manage")
                 model = TakeoutModel(page, last_snapshot_timestamp)
-                TakeoutMachine(model, states=TakeoutStates.as_list(), initial=TakeoutStates.on_manage, queued=True, prepare_event=ref(TakeoutModel.ensure_auth))
+                TakeoutMachine(
+                    model,
+                    states=TakeoutStates.as_list(),
+                    initial=TakeoutStates.on_manage,
+                    queued=True,
+                    prepare_event=ref(TakeoutModel.ensure_auth),
+                )
 
                 try:
                     await model.assess_manage_page()
                     state = await page.context.storage_state()
                     auth_json_path.write_text(state["encoded_value"])
                     logging.info(f"completed with state: {model.state}")
-                except Exception as e:
+                except Exception:
                     try:
                         if page and not page.is_closed():
                             now = datetime.datetime.now()
                             encoded_timestamp = encode_takeout_timestamp(now)
-                            downloads_path.joinpath(
-                                f"{encoded_timestamp}.url"
-                            ).write_text(page.url)
-                            downloads_path.joinpath(
-                                f"{encoded_timestamp}.html"
-                            ).write_text(await page.content())
-                            await page.screenshot(
-                                path=downloads_path.joinpath(f"{encoded_timestamp}.jpg")
-                            )
+                            downloads_path.joinpath(f"{encoded_timestamp}.url").write_text(page.url)
+                            downloads_path.joinpath(f"{encoded_timestamp}.html").write_text(await page.content())
+                            await page.screenshot(path=downloads_path.joinpath(f"{encoded_timestamp}.jpg"))
                             if console:
-                                downloads_path.joinpath(
-                                    f"{encoded_timestamp}.console"
-                                ).write_text("\n".join(console))
+                                downloads_path.joinpath(f"{encoded_timestamp}.console").write_text("\n".join(console))
                             if network:
-                                downloads_path.joinpath(
-                                    f"{encoded_timestamp}.net"
-                                ).write_text("\n".join(network))
+                                downloads_path.joinpath(f"{encoded_timestamp}.net").write_text("\n".join(network))
                     except Exception as e:
                         logging.error(f"failed to collect diagnostic info with {e}, ignoring")
                     raise
 
     logging.info("closed browser")
 
-    if model.state == TakeoutStates.complete.name and hasattr(model, 'target_archive_download_path'):
+    if model.state == TakeoutStates.complete.name and hasattr(model, "target_archive_download_path"):
         for f in model.target_archive_download_path.glob("*.zip"):
             with zipfile.ZipFile(f, "r") as archive:
                 archive.extractall(model.target_archive_download_path)
@@ -444,9 +486,7 @@ async def main():
             logging.error(f"Stdout: {e.stdout}")
             raise e
 
-        all_photos_path = processed_photos_path.joinpath(
-            os.getenv("GPTH_DEFAULT_FOLDER_NAME", "ALL_PHOTOS")
-        )
+        all_photos_path = processed_photos_path.joinpath(os.getenv("GPTH_DEFAULT_FOLDER_NAME", "ALL_PHOTOS"))
         for f in all_photos_path.iterdir():
             shutil.move(f, processed_photos_path.joinpath(f.name))
         all_photos_path.rmdir()

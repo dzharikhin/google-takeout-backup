@@ -26,6 +26,7 @@ Both parts use **state machines** (`transitions` library) to drive the authentic
 ## Key conventions
 
 - **4-space indentation.** Python code uses 4 spaces per indentation level.
+- **Format code with `ruff format` before committing.** Run `ruff format .` to automatically format all Python files according to project style.
 - **UI selectors are locale-dependent.** `keys_*.csv` maps logical names to visible button/label text (e.g. `export.ready.label` → `Завершено`). CSS classes are obfuscated and change. Set `GOOGLE_LANG` env var to `RU` or `EN` to pick the right file.
 - **`auth.py` uses `transitions` state machine** with `@with_model_definitions` and `@name_enricher` decorators — the transition graph is defined declaratively via `add_transitions(transition(...))` on methods, not via the usual `Machine` constructor.
 - **Dependencies are managed by `uv`** via `pyproject.toml` dependency groups (`proxy`, `manual-auth`, `backup`, `dev`), not separate packages. Install with `uv sync --group <name>`.

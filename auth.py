@@ -10,7 +10,6 @@ TAKEOUT_BASEURL = "https://takeout.google.com/"
 TAKEOUT_URL = f"{TAKEOUT_BASEURL}settings/takeout/custom/photos"
 
 
-
 def name_enricher(outer):
     def _wrapper(func):
         original_name = func.__name__
@@ -22,17 +21,14 @@ def name_enricher(outer):
 
 
 def ref(func):
-    return getattr(func, 'original_name', None) or func.__name__
+    return getattr(func, "original_name", None) or func.__name__
 
 
 class CheckingAsyncEvent(AsyncEvent):
     async def _trigger(self, event_data):
         result = await super()._trigger(event_data)
         if not result and event_data.error is None:
-            raise RuntimeError(
-                f"No conditions matched in state '{event_data.model.state}' "
-                f"for event '{self.name}'"
-            )
+            raise RuntimeError(f"No conditions matched in state '{event_data.model.state}' for event '{self.name}'")
         return result
 
 
@@ -54,7 +50,7 @@ class States:
 
 
 class GoogleLoginModel:
-    def __init__(self, page: Page, timeout, mfa_confirm_timeout = None, email_env="USER_E", password_env="USER_P"):
+    def __init__(self, page: Page, timeout, mfa_confirm_timeout=None, email_env="USER_E", password_env="USER_P"):
         self.page = page
         self.timeout = timeout
         self.mfa_confirm_timeout = mfa_confirm_timeout or timeout * 3
@@ -135,7 +131,9 @@ class GoogleLoginModel:
         logging.debug("is_restore")
         await self.is_refresh_complete()
         try:
-            await expect(self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]')).to_be_visible(timeout=self.timeout)
+            await expect(
+                self.page.locator('[href^="https://myaccount.google.com/signinoptions/password"]')
+            ).to_be_visible(timeout=self.timeout)
             return True
         except (PlaywrightTimeoutError, AssertionError) as e:
             logging.debug(f"is_restore:{e} returning false")
@@ -146,7 +144,11 @@ class GoogleLoginModel:
         await self.is_refresh_complete()
         try:
             await self.page.wait_for_url(
-                lambda u: (parsed := urlparse(u), "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress"))[-1], timeout=self.timeout
+                lambda u: (
+                    parsed := urlparse(u),
+                    "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress"),
+                )[-1],
+                timeout=self.timeout,
             )
             return True
         except (PlaywrightTimeoutError, AssertionError) as e:
@@ -172,9 +174,7 @@ class GoogleLoginModel:
         if not self.page.url.startswith(TAKEOUT_BASEURL):
             return False
         try:
-            await self.page.wait_for_url(
-                lambda u: not u.startswith(TAKEOUT_BASEURL), timeout=self.timeout
-            )
+            await self.page.wait_for_url(lambda u: not u.startswith(TAKEOUT_BASEURL), timeout=self.timeout)
             return False
         except PlaywrightTimeoutError as e:
             logging.debug(f"is_takeout_url:{e} returning true")
@@ -199,9 +199,11 @@ class GoogleLoginModel:
         await expect(email_input).to_have_count(1, timeout=self.timeout)
         await expect(email_input).to_be_visible(timeout=self.timeout)
         await email_input.fill(os.getenv(self.email_env))
-        await self.page.locator("button#identifierNext").or_(
-            self.page.locator("div#identifierNext")
-        ).click(timeout=self.timeout)
+        await (
+            self.page.locator("button#identifierNext")
+            .or_(self.page.locator("div#identifierNext"))
+            .click(timeout=self.timeout)
+        )
         await expect(email_input).to_be_hidden(timeout=self.timeout)
 
     async def fill_password_and_proceed(self):
@@ -209,10 +211,14 @@ class GoogleLoginModel:
         await expect(password_input).to_have_count(1, timeout=self.timeout)
         await expect(password_input).to_be_visible(timeout=self.timeout)
         await password_input.fill(os.getenv(self.password_env))
-        await self.page.locator("button#passwordNext").or_(
-            self.page.locator("div#passwordNext")
-        ).click(timeout=self.timeout)
-        await self.page.wait_for_url(lambda u: "challenge/pwd" not in u, timeout=self.timeout, wait_until="domcontentloaded")
+        await (
+            self.page.locator("button#passwordNext")
+            .or_(self.page.locator("div#passwordNext"))
+            .click(timeout=self.timeout)
+        )
+        await self.page.wait_for_url(
+            lambda u: "challenge/pwd" not in u, timeout=self.timeout, wait_until="domcontentloaded"
+        )
 
     async def click_try_another_mfa(self):
         button_panel = self.page.locator("[data-secondary-action-label]")
@@ -236,76 +242,157 @@ class GoogleLoginModel:
         params = parse_qs(parsed.query)
         continue_url = params.get("continue", [TAKEOUT_BASEURL])[0]
         await self.page.goto(continue_url)
-        await self.page.wait_for_url(lambda u: "homeaddress" not in u, timeout=self.timeout, wait_until="domcontentloaded")
+        await self.page.wait_for_url(
+            lambda u: "homeaddress" not in u, timeout=self.timeout, wait_until="domcontentloaded"
+        )
 
     async def handle_challenge_confirm(self):
         text = await self.page.locator("body").inner_text()
         print(text)
-        await self.page.wait_for_url(lambda u: "signin/challenge/dp" not in u, timeout=self.mfa_confirm_timeout, wait_until="domcontentloaded")
+        await self.page.wait_for_url(
+            lambda u: "signin/challenge/dp" not in u, timeout=self.mfa_confirm_timeout, wait_until="domcontentloaded"
+        )
         await self.confirm_mfa()
 
-    @name_enricher(add_transitions(
-        transition(source=States.address_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(source=States.address_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
+        )
+    )
     async def leave_address(self): ...
 
-    @name_enricher(add_transitions(transition(
-        source=States.other_challenge_select,
-        dest=States.challenge_confirm,
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.other_challenge_select,
+                dest=States.challenge_confirm,
+            )
+        )
+    )
     async def select_acceptable_mfa(self): ...
 
-    @name_enricher(add_transitions(transition(
-        source=States.challenge_skotp,
-        dest=States.other_challenge_select,
-        after=ref(select_acceptable_mfa),
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.challenge_skotp,
+                dest=States.other_challenge_select,
+                after=ref(select_acceptable_mfa),
+            )
+        )
+    )
     async def skip_skotp(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=States.offer_to_restore, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
-        transition(source=States.offer_to_restore, dest=States.auth_success, conditions=ref(is_takeout_url)),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.offer_to_restore,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
+            transition(source=States.offer_to_restore, dest=States.auth_success, conditions=ref(is_takeout_url)),
+        )
+    )
     async def skip_restoration(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
-        transition(source=States.password_entry, dest=States.challenge_skotp, conditions=ref(is_skotp), after=ref(skip_skotp)),
-        transition(source=States.password_entry, dest=States.other_challenge_select, conditions=ref(is_mfa_selection), after=ref(select_acceptable_mfa)),
-        transition(source=States.password_entry, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
-        transition(source=States.password_entry, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
+            transition(
+                source=States.password_entry,
+                dest=States.challenge_skotp,
+                conditions=ref(is_skotp),
+                after=ref(skip_skotp),
+            ),
+            transition(
+                source=States.password_entry,
+                dest=States.other_challenge_select,
+                conditions=ref(is_mfa_selection),
+                after=ref(select_acceptable_mfa),
+            ),
+            transition(
+                source=States.password_entry,
+                dest=States.offer_to_restore,
+                conditions=ref(is_restore),
+                after=ref(skip_restoration),
+            ),
+            transition(
+                source=States.password_entry,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
+        )
+    )
     async def submit_password(self): ...
 
-
-    @name_enricher(add_transitions(transition(
-        source=States.email_entry,
-        dest=States.password_entry,
-        after=ref(submit_password),
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.email_entry,
+                dest=States.password_entry,
+                after=ref(submit_password),
+            )
+        )
+    )
     async def submit_email(self): ...
 
-    @name_enricher(add_transitions(transition(
-        source=States.account_chooser,
-        dest=States.password_entry,
-        after=ref(submit_password),
-    )))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.account_chooser,
+                dest=States.password_entry,
+                after=ref(submit_password),
+            )
+        )
+    )
     async def select_and_proceed(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=States.start, dest=States.auth_success, conditions=ref(is_takeout_url)),
-        transition(source=States.start, dest=States.account_chooser, conditions=ref(is_on_account_choose_form), after=ref(select_and_proceed)),
-        transition(source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)),
-        transition(source=States.start, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
-        transition(source=States.start, dest=States.password_entry, conditions=ref(is_password_challenge), after=ref(submit_password)),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(source=States.start, dest=States.auth_success, conditions=ref(is_takeout_url)),
+            transition(
+                source=States.start,
+                dest=States.account_chooser,
+                conditions=ref(is_on_account_choose_form),
+                after=ref(select_and_proceed),
+            ),
+            transition(
+                source=States.start,
+                dest=States.password_entry,
+                conditions=ref(is_password_challenge),
+                after=ref(submit_password),
+            ),
+            transition(
+                source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)
+            ),
+            transition(
+                source=States.start,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
+        )
+    )
     async def sign_in(self): ...
 
-    @name_enricher(add_transitions(
-        transition(source=States.challenge_confirm, dest=States.offer_to_restore, conditions=ref(is_restore), after=ref(skip_restoration)),
-        transition(source=States.challenge_confirm, dest=States.address_entry, conditions=ref(is_on_address_entry_form), after=ref(leave_address)),
-        transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
-    ))
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=States.challenge_confirm,
+                dest=States.offer_to_restore,
+                conditions=ref(is_restore),
+                after=ref(skip_restoration),
+            ),
+            transition(
+                source=States.challenge_confirm,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
+            transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
+        )
+    )
     async def confirm_mfa(self): ...
 
 
