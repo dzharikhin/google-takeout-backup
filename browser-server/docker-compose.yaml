@@ -1,109 +1,39 @@
 services:
-  proxy:
+  undetected-grid:
     build:
       context: ..
-      dockerfile: browser-server/Dockerfile.proxy
-      args:
-        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
-    restart: always
-    env_file:
-      - ../.env
-      - .env
+      dockerfile: browser-server/Dockerfile.undetected_grid
     ports:
-      - "${PROXY_PUBLIC_PORT:-8082}:8080"
-    environment:
-      BROWSER_URL: ws://browser:${BROWSER_PORT}/srv
-      PYTHONUNBUFFERED: "1"
-    networks:
-      - secure_net
-    profiles:
-      - "headed"
-      - "virtual"
-
-  #  launch browser hosted on virtual display - stealth Firefox, less detection-prone
-  browser-virtual:
-    build:
-      context: ..
-      dockerfile: browser-server/Dockerfile.browser
-      args:
-        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
-    restart: always
-    stdin_open: true
-    tty: true
-    env_file:
-      - ../.env
-      - .env
-    environment:
-      COMPOSE_PROFILES: virtual
-      HEADLESS_MODE: virtual
-      BROWSER_PORT: ${BROWSER_PORT:-8081}
-      FP_SEED: ${FP_SEED:-42}
-      FP_LOCALE: ${FP_LOCALE:-en-US}
-      FP_TIMEZONE: ${FP_TIMEZONE:-}
-      FP_HUMANIZE: ${FP_HUMANIZE:-true}
+      - "4444:4444"
     volumes:
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-    networks:
-      secure_net:
-        aliases:
-          - browser
-    expose:
-      - "${BROWSER_PORT}"
-    profiles:
-      - "virtual"
-
-  #  launch browser headed - maybe for debug purposes
-  browser-headed:
-    build:
-      context: ..
-      dockerfile: browser-server/Dockerfile.browser
-      args:
-        PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION:-1.60.0}
-    restart: always
-    env_file:
-      - ../.env
-      - .env
+      - ./browser-downloads:/app/grid-downloads
+      - ./browser-local-storage:/app/browser-local-storage
+      - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
-      COMPOSE_PROFILES: headed
-      HEADLESS_MODE: headed
-      BROWSER_PORT: ${BROWSER_PORT:-8081}
-      FP_SEED: ${FP_SEED:-42}
-      FP_LOCALE: ${FP_LOCALE:-en-US}
-      FP_TIMEZONE: ${FP_TIMEZONE:-}
-      FP_HUMANIZE: ${FP_HUMANIZE:-true}
-      XDG_RUNTIME_DIR: /tmp
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
-    volumes:
-      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/${WAYLAND_DISPLAY:-wayland-0}
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-    devices:
-      - /dev/dri:/dev/dri
-    networks:
-      secure_net:
-        aliases:
-          - browser
-    expose:
-      - "${BROWSER_PORT}"
-    profiles: !override
-      - "headed"
+      DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
+      DISPLAY: ${DISPLAY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:4444/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
 
-  browser-manual:
+  manual-auth:
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.manual-auth
-    restart: no
+    depends_on:
+      undetected-grid:
+        condition: service_healthy
+    network_mode: "service:undetected-grid"
     environment:
-      HEADLESS_MODE: ${HEADLESS_MODE:-virtual}
+      DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
       USER_E: ${USER_E}
       USER_P: ${USER_P}
-      TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
-      GOOGLE_LANG: EN
     volumes:
-      - ./browser-downloads/:/app/browser-downloads
-    profiles: ["manual"]
+      - ./browser-downloads:/app/browser-downloads
+    profiles:
+      - "manual"
 
-networks:
-  secure_net:
-    external: true

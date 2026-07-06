@@ -6,32 +6,31 @@ requires-python = ">=3.13"
 dependencies = []
 
 [dependency-groups]
-proxy = [
-    "eciespy",
-    "eth-keys",
-    "coincurve",
-    "websockets",
-]
 manual-auth = [
-    "invisible-playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    "undetected-geckodriver-lw>=2.1.0",
+    "selenium>=4.10.0",
     "transitions>=0.9.3",
 ]
 backup = [
-    "playwright==1.60.0",
+    "selenium>=4.10.0",
     "transitions>=0.9.3",
 ]
 browser = [
-    "invisible-playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    "undetected-geckodriver-lw>=2.1.0",
+    "selenium>=4.10.0",
 ]
 dev = [
-    "playwright==1.60.0",
-    "python-statemachine>=3.2.0",
+    "undetected-geckodriver-lw>=2.1.0",
+    "selenium>=4.10.0",
     "ruff>=0.9.0",
 ]
 
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+
+[tool.ruff.lint]
+extend-select = ["PLC0415"]
 
 [tool.ruff.format]
 quote-style = "double"
