@@ -1,6 +1,6 @@
 services:
   backup:
-    restart: always
+    restart: no
     build:
       context: ..
       dockerfile: backup-server/Dockerfile
