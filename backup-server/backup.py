@@ -16,6 +16,7 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 from transitions import Machine, State, Event
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
@@ -43,6 +44,10 @@ text_labels_source = pathlib.Path(f"keys_{os.getenv('GOOGLE_LANG', 'RU')}.csv")
 
 with text_labels_source.open(mode="rt") as labels_data:
     text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
+
+
+def archive_url(link):
+    return link if link.startswith("http") else f"{TAKEOUT_BASEURL}{link.lstrip('/')}"
 
 
 class CheckingEvent(Event):
@@ -91,7 +96,7 @@ class TakeoutModel:
         self.target_archive = None
         self.target_archive_timestamp = None
         self.target_archive_download_path = None
-        self.ready_archive_links = None
+        self.archive_links = None
         self.archive_parts = None
         self.state = "start"
 
@@ -105,15 +110,17 @@ class TakeoutModel:
         now = datetime.datetime.now()
         return abs(now - self.last_snapshot_timestamp) < BACKUP_FRESHNESS_INTERVAL
 
-    def has_ready_archive_links(self):
-        links = self.driver.find_elements(By.XPATH, "//a[@href and .//svg//path[contains(@d,'l-8 8z')]]")
-        hrefs = []
-        for link in links:
-            href = link.get_attribute("href")
-            if href:
-                hrefs.append(href)
-        self.ready_archive_links = hrefs
-        return len(hrefs) > 0
+    def has_archive_links(self):
+        try:
+            WebDriverWait(self.driver, self._timeout_s).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, 'a[href*="/manage/archive/"]')
+            )
+        except TimeoutException:
+            logging.warning("no archive links appeared after wait; treating as none")
+        links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/manage/archive/"]')
+        hrefs = [link.get_attribute("href") for link in links]
+        self.archive_links = [h for h in hrefs if h]
+        return len(self.archive_links) > 0
 
     def has_newer_archive(self):
         return self.target_archive is not None
@@ -153,9 +160,20 @@ class TakeoutModel:
                         return pathlib.Path(path)
                 except Exception:
                     pass
+
+                current_url = self.driver.current_url
+                if "accounts.google.com" in current_url:
+                    logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
+                    self.ensure_auth()
+                    if archive_url:
+                        self.driver.get(archive_url)
+                        self.ensure_auth()
+                    archive_url = None
+                    break
+
                 time.sleep(2)
 
-            if attempt == 0:
+            if attempt == 0 and archive_url is not None:
                 logging.info("Retrying after reauth")
                 self.ensure_auth()
                 if archive_url:
@@ -167,18 +185,20 @@ class TakeoutModel:
         raise RuntimeError("Unreachable")
 
     def find_most_recent_archive(self):
-        for ready_archive_link in self.ready_archive_links:
-            self.driver.get(f"{TAKEOUT_BASEURL}{ready_archive_link}")
+        for archive_link in self.archive_links:
+            self.driver.get(archive_url(archive_link))
             self.ensure_auth()
-
-            report_download_button = self.driver.find_element(
+            buttons = self.driver.find_elements(
                 By.CSS_SELECTOR, 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
             )
-            path = self.download_with_reauth(report_download_button)
+            if not buttons:
+                logging.info(f"skipping non-downloadable archive (expired): {archive_link}")
+                continue
+            path = self.download_with_reauth(buttons[0])
             current_archive_timestamp = parse_takeout_timestamp(path.name.split("-", 3)[1])
             logging.info(f"current archive timestamp: {current_archive_timestamp}")
             if not self.last_snapshot_timestamp or current_archive_timestamp > self.last_snapshot_timestamp:
-                self.target_archive = ready_archive_link
+                self.target_archive = archive_link
                 self.target_archive_timestamp = current_archive_timestamp
                 return
 
@@ -192,7 +212,7 @@ class TakeoutModel:
         self.target_archive_download_path.mkdir()
 
     def navigate_to_archive(self):
-        self.driver.get(f"{TAKEOUT_BASEURL}{self.target_archive}")
+        self.driver.get(archive_url(self.target_archive))
         self.ensure_auth()
         self.archive_parts = self.driver.find_elements(
             By.CSS_SELECTOR, 'div[data-download-uri] a[href*="takeout/download"]'
@@ -280,7 +300,7 @@ class TakeoutModel:
             transition(
                 source=TakeoutStates.on_manage,
                 dest=TakeoutStates.selecting_archive,
-                conditions=ref(has_ready_archive_links),
+                conditions=ref(has_archive_links),
                 after=ref(select_archive),
             ),
             transition(source=TakeoutStates.on_manage, dest=TakeoutStates.requesting_archive),
@@ -313,13 +333,7 @@ def set_cookies_for_domains(driver, cookies):
     driver.get("https://www.google.com/")
     driver.delete_all_cookies()
     for cookie in cookies:
-        if cookie.get("domain") != "takeout.google.com":
-            driver.add_cookie(cookie)
-
-    driver.get(f"{TAKEOUT_BASEURL}robots.txt")
-    for cookie in cookies:
-        if cookie.get("domain") == "takeout.google.com":
-            driver.add_cookie(cookie)
+        driver.add_cookie(cookie)
 
 
 def main():
@@ -337,6 +351,7 @@ def main():
 
     options = Options()
     options.set_capability("se:downloadsEnabled", True)
+    options.set_capability("webSocketUrl", True)
 
     driver = webdriver.Remote(
         command_executor=os.getenv("BROWSER_SERVER_URL", "http://localhost:4444"),

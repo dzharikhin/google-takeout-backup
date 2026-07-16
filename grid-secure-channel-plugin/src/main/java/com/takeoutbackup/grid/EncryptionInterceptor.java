@@ -10,12 +10,19 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.bouncycastle.util.encoders.Hex;
 import org.jspecify.annotations.Nullable;
+import org.openqa.selenium.Capabilities;
 import org.openqa.selenium.events.EventBus;
 import org.openqa.selenium.grid.config.Config;
+import org.openqa.selenium.grid.data.SessionCreatedData;
+import org.openqa.selenium.grid.data.SessionCreatedEvent;
+import org.openqa.selenium.grid.data.SessionClosedData;
+import org.openqa.selenium.grid.data.SessionClosedEvent;
 import org.openqa.selenium.grid.node.NodeCommandInterceptor;
 import org.openqa.selenium.remote.SessionId;
 import org.openqa.selenium.remote.http.Contents;
@@ -29,6 +36,8 @@ public class EncryptionInterceptor implements NodeCommandInterceptor {
     private byte[] publicKeyBytes;
     private byte[] privateKeyBytes;
     private static final Logger LOGGER = Logger.getLogger(EncryptionInterceptor.class.getName());
+    private final ConcurrentMap<SessionId, String> sessionBidiUrls = new ConcurrentHashMap<>();
+    private final ConcurrentMap<SessionId, BiDiClient> bidiClients = new ConcurrentHashMap<>();
 
     @Override
     public boolean isEnabled(Config config) {
@@ -59,8 +68,35 @@ public class EncryptionInterceptor implements NodeCommandInterceptor {
             LOGGER.info("Grid plugin initialized with ECIES keys");
             LOGGER.info("Encode with: https://dzharikhin.github.io/ecies/?pk=" + publicKeyHex);
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Failed to load ECIES keys: {0}", e.getMessage());
+            LOGGER.log(Level.SEVERE, "Failed to load ECIES keys", e);
             throw new RuntimeException(e);
+        }
+
+        bus.addListener(SessionCreatedEvent.listener(data -> {
+            SessionId sid = data.getSessionId();
+            Capabilities caps = data.getCapabilities();
+            Object bidiUrl = caps.getCapability("webSocketUrl");
+            if (bidiUrl instanceof String) {
+                sessionBidiUrls.put(sid, (String) bidiUrl);
+                LOGGER.info("Session " + sid + " has BiDi URL: " + bidiUrl);
+            }
+        }));
+
+        bus.addListener(SessionClosedEvent.listener(data -> {
+            SessionId sid = data.getSessionId();
+            closeBiDiClient(sid);
+            sessionBidiUrls.remove(sid);
+        }));
+    }
+
+    private void closeBiDiClient(SessionId sid) {
+        BiDiClient client = bidiClients.remove(sid);
+        if (client != null) {
+            try {
+                client.close();
+            } catch (Exception e) {
+                LOGGER.fine("Failed to close BiDiClient for session " + sid + ": " + e.getMessage());
+            }
         }
     }
 
@@ -71,11 +107,47 @@ public class EncryptionInterceptor implements NodeCommandInterceptor {
 
         String method = req.getMethod().toString();
         String uri = req.getUri();
+        LOGGER.info("intercept: " + method + " " + uri + " sessionId=" + id);
 
         if ("POST".equals(method) && uri.contains("/cookie")) {
             String body = req.contentAsString();
             body = decryptCookieValues(body);
             req.setContent(Contents.bytes(body.getBytes(StandardCharsets.UTF_8)));
+
+            HttpResponse resp = next.call();
+
+            String respBody = resp.contentAsString();
+            if (respBody.toLowerCase().contains("invalid cookie domain")) {
+                String bidiUrl = sessionBidiUrls.get(id);
+                if (bidiUrl == null || bidiUrl.isEmpty()) {
+                    throw new RuntimeException("InvalidCookieDomain but no BiDi URL available (session may not have webSocketUrl)");
+                }
+
+                JsonObject decryptedCookie = JsonParser.parseString(body).getAsJsonObject().getAsJsonObject("cookie");
+                String cookieName = decryptedCookie.has("name") ? decryptedCookie.get("name").getAsString() : "?";
+                String cookieDomain = decryptedCookie.has("domain") ? decryptedCookie.get("domain").getAsString() : "?";
+
+                BiDiClient bidi = bidiClients.computeIfAbsent(id, sid -> new BiDiClient(bidiUrl));
+                bidi.ensureSession();
+
+                JsonObject bidiCookie = CookieConverter.classicToBiDi(decryptedCookie);
+                JsonObject params = new JsonObject();
+                params.add("cookie", bidiCookie);
+
+                try {
+                    bidi.sendCommand("storage.setCookie", params).join();
+                    LOGGER.info("Set cookie " + cookieName + " for domain " + cookieDomain + " via BiDi (InvalidCookieDomain fallback)");
+                    HttpResponse newResp = new HttpResponse();
+                    newResp.setStatus(200);
+                    newResp.setContent(Contents.bytes("{\"value\": null}".getBytes(StandardCharsets.UTF_8)));
+                    return newResp;
+                } catch (Exception e) {
+                    LOGGER.warning("BiDi setCookie failed for " + cookieName + ": " + e.getMessage());
+                    throw new RuntimeException("BiDi setCookie failed", e);
+                }
+            }
+
+            return resp;
         }
 
         if ("POST".equals(method) && uri.contains("/value")) {
@@ -87,16 +159,45 @@ public class EncryptionInterceptor implements NodeCommandInterceptor {
         HttpResponse resp = next.call();
 
         if ("GET".equals(method) && uri.contains("/cookie")) {
-            String body = resp.contentAsString();
-            body = encryptCookieValues(body);
-            resp.setContent(Contents.bytes(body.getBytes(StandardCharsets.UTF_8)));
+            String bidiUrl = sessionBidiUrls.get(id);
+            if (bidiUrl == null || bidiUrl.isEmpty()) {
+                throw new RuntimeException("GET /cookie but no BiDi URL available (session may not have webSocketUrl)");
+            }
+
+            BiDiClient bidi = bidiClients.computeIfAbsent(id, sid -> new BiDiClient(bidiUrl));
+            bidi.ensureSession();
+
+            try {
+                JsonObject result = bidi.sendCommand("storage.getCookies", new JsonObject()).join();
+                JsonArray cookiesArray = result.getAsJsonArray("cookies");
+                JsonArray classicCookies = new JsonArray();
+                for (JsonElement el : cookiesArray) {
+                    if (el.isJsonObject()) {
+                        classicCookies.add(CookieConverter.biDiToClassic(el.getAsJsonObject()));
+                    }
+                }
+
+                JsonObject wrapped = new JsonObject();
+                wrapped.add("value", classicCookies);
+                String encrypted = encryptCookieValues(wrapped.toString());
+                resp.setContent(Contents.bytes(encrypted.getBytes(StandardCharsets.UTF_8)));
+            } catch (Exception e) {
+                LOGGER.warning("BiDi getCookies failed: " + e.getMessage());
+                throw new RuntimeException("BiDi getCookies failed", e);
+            }
         }
 
         return resp;
     }
 
     @Override
-    public void close() throws IOException {}
+    public void close() throws IOException {
+        for (SessionId sid : bidiClients.keySet()) {
+            closeBiDiClient(sid);
+        }
+        bidiClients.clear();
+        sessionBidiUrls.clear();
+    }
 
     private String decryptCookieValues(String json) {
         try {
@@ -162,17 +263,22 @@ public class EncryptionInterceptor implements NodeCommandInterceptor {
             JsonObject root = JsonParser.parseString(json).getAsJsonObject();
             if (root.has("value") && root.get("value").isJsonArray()) {
                 JsonArray arr = root.getAsJsonArray("value");
-                for (int i = 0; i < arr.size(); i++) {
-                    JsonElement el = arr.get(i);
-                    if (!el.isJsonPrimitive()) continue;
-                    String encrypted = el.getAsString();
-                    try {
-                        byte[] encryptedBytes = Hex.decode(encrypted);
-                        byte[] decrypted = Ecies.decrypt(privateKeyBytes, encryptedBytes);
-                        arr.set(i, new JsonPrimitive(new String(decrypted, StandardCharsets.UTF_8)));
-                    } catch (Exception e) {
-                        LOGGER.log(Level.FINE, "Failed to decrypt value, passing through: {0}", e.getMessage());
-                    }
+                StringBuilder sb = new StringBuilder();
+                for (JsonElement el : arr) {
+                    if (!el.isJsonPrimitive()) return json;   // not a typed string; pass through unchanged
+                    sb.append(el.getAsString());
+                }
+                String joined = sb.toString();
+                try {
+                    byte[] encryptedBytes = Hex.decode(joined);
+                    byte[] decrypted = Ecies.decrypt(privateKeyBytes, encryptedBytes);
+                    String plaintext = new String(decrypted, StandardCharsets.UTF_8);
+                    JsonArray newArr = new JsonArray();
+                    for (char c : plaintext.toCharArray()) newArr.add(String.valueOf(c));
+                    root.add("value", newArr);
+                    root.addProperty("text", plaintext);
+                } catch (Exception e) {
+                    LOGGER.log(Level.FINE, "Failed to decrypt joined value, passing through: {0}", e.getMessage());
                 }
             }
             return root.toString();

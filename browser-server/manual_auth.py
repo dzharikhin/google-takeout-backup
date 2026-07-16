@@ -52,10 +52,28 @@ def main():
         print(f"PSIDTS did not appear within 30s; capturing {len(last_names)} cookies anyway")
         return driver.get_cookies()
 
+    def capture_and_merge_accounts_cookies(base_cookies):
+        print("Capturing accounts.google.com cookies for full session")
+        driver.get("https://accounts.google.com/")
+        time.sleep(3)
+        accounts_cookies = driver.get_cookies()
+
+        merged = base_cookies.copy()
+        seen = {(c["domain"], c["name"]): c for c in merged}
+
+        for cookie in accounts_cookies:
+            key = (cookie["domain"], cookie["name"])
+            seen[key] = cookie
+
+        merged = list(seen.values())
+        print(f"Merged {len(accounts_cookies)} accounts cookies, total {len(merged)} cookies")
+        return merged
+
     def handle_manual_auth_close(cookies=None):
         try:
             if cookies is None:
                 cookies = wait_for_session_cookies()
+                cookies = capture_and_merge_accounts_cookies(cookies)
 
             file_path = downloads_path.joinpath(".auth_encoded")
             data = {"cookies": sanitize_cookies(cookies)}
@@ -114,6 +132,7 @@ def main():
                 print("Reached Takeout — saving auth state...")
                 try:
                     cookies = wait_for_session_cookies()
+                    cookies = capture_and_merge_accounts_cookies(cookies)
                 except Exception as e:
                     print(f"Failed to fetch cookies; aborting. {e}", file=sys.stderr)
                     try:
