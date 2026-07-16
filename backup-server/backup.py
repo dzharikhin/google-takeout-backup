@@ -24,7 +24,7 @@ from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
 from cookies import sanitize_cookies
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
     stream=sys.stdout,
     force=True,
@@ -218,7 +218,17 @@ class TakeoutModel:
     def request_new_archive(self):
         self.driver.get(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
         WebDriverWait(self.driver, self._timeout_s).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "div[data-jobid] button[aria-label]"))
+            lambda d: next(
+                (
+                    b
+                    for b in d.find_elements(
+                        By.CSS_SELECTOR,
+                        "div[data-jobid] > div:nth-of-type(2) button[aria-label]",
+                    )
+                    if b.is_displayed() and b.is_enabled()
+                ),
+                None,
+            )
         ).click()
         WebDriverWait(self.driver, self._timeout_s).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "div[data-configure-step] button"))
