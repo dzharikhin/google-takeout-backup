@@ -10,6 +10,7 @@ import time
 import re
 import subprocess
 import zipfile
+import urllib3.exceptions
 
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
@@ -48,6 +49,11 @@ with text_labels_source.open(mode="rt") as labels_data:
 
 def archive_url(link):
     return link if link.startswith("http") else f"{TAKEOUT_BASEURL}{link.lstrip('/')}"
+
+
+def parse_part_index(href):
+    m = re.search(r"[?&]i=(\d+)", href or "")
+    return int(m.group(1)) if m else None
 
 
 class CheckingEvent(Event):
@@ -141,48 +147,68 @@ class TakeoutModel:
         auth_model.sign_in()
         machine.ensure_auth()
 
+    def _assert_grid_downloads_empty(self):
+        remaining = self.driver.get_downloadable_files()
+        if remaining:
+            raise RuntimeError(f"grid download dir not empty before download: {remaining}")
+
+    def _clear_grid_downloads(self):
+        self.driver.delete_downloadable_files()
+        remaining = self.driver.get_downloadable_files()
+        if remaining:
+            raise RuntimeError(f"grid download dir not empty after delete_downloadable_files(): {remaining}")
+
     def download_with_reauth(self, element):
-        archive_url = None
-        for attempt in range(2):
-            if archive_url is None:
-                archive_url = self.driver.current_url
+        self._assert_grid_downloads_empty()
+        self.driver.execute_script("arguments[0].click();", element)
+        deadline = time.monotonic() + DOWNLOAD_TIMEOUT_MILLIS / 1000
+        while time.monotonic() < deadline:
+            try:
+                downloadable = self.driver.get_downloadable_files()
+            except Exception as e:
+                logging.debug(f"download attempt failed: {e}")
+                downloadable = []
+            finished = [f for f in downloadable if not f.endswith(".part")]
+            in_progress = any(f.endswith(".part") for f in downloadable)
+            if finished and not in_progress:
+                path = self._take_completed_download(finished)
+                if path:
+                    self._clear_grid_downloads()
+                    return path
 
-            self.driver.execute_script("arguments[0].click();", element)
-
-            deadline = time.monotonic() + DOWNLOAD_TIMEOUT_MILLIS / 1000
-            while time.monotonic() < deadline:
-                try:
-                    downloadable = self.driver.get_downloadable_files()
-                    downloadable = [f for f in downloadable if not f.endswith(".part")]
-                    if downloadable:
-                        filename = downloadable[0]
-                        path = self.driver.download_file(filename, str(downloads_path))
-                        return pathlib.Path(path)
-                except Exception:
-                    pass
-
-                current_url = self.driver.current_url
-                if "accounts.google.com" in current_url:
-                    logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
-                    self.ensure_auth()
-                    if archive_url:
-                        self.driver.get(archive_url)
-                        self.ensure_auth()
-                    archive_url = None
-                    break
-
-                time.sleep(2)
-
-            if attempt == 0 and archive_url is not None:
-                logging.info("Retrying after reauth")
+            current_url = self.driver.current_url
+            if "accounts.google.com" in current_url:
+                logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
                 self.ensure_auth()
-                if archive_url:
-                    self.driver.get(archive_url)
-                    self.ensure_auth()
-                archive_url = None
                 continue
-            raise TimeoutError("Download failed")
-        raise RuntimeError("Unreachable")
+
+            time.sleep(2)
+
+        raise TimeoutError("Download failed")
+
+    def _take_completed_download(self, names):
+        non_empty = []
+        for name in names:
+            max_retries = 3
+            base_delay = 2
+            for attempt in range(max_retries):
+                try:
+                    self.driver.download_file(name, str(downloads_path))
+                    break
+                except (urllib3.exceptions.ProtocolError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
+                    if attempt == max_retries - 1:
+                        raise RuntimeError(f"failed to download file {name} after {max_retries} attempts: {e}")
+                    delay = base_delay * (2**attempt)
+                    logging.warning(f"download attempt {attempt + 1} failed for {name}, retrying in {delay}s: {e}")
+                    time.sleep(delay)
+            candidate = downloads_path.joinpath(name)
+            if candidate.exists() and candidate.stat().st_size > 0:
+                non_empty.append(candidate)
+            else:
+                candidate.unlink(missing_ok=True)
+        if len(non_empty) > 1:
+            raise RuntimeError(f"expected exactly 1 finished download, got {len(non_empty)}: {non_empty}")
+        return non_empty[0] if non_empty else None
 
     def find_most_recent_archive(self):
         for archive_link in self.archive_links:
@@ -214,17 +240,25 @@ class TakeoutModel:
     def navigate_to_archive(self):
         self.driver.get(archive_url(self.target_archive))
         self.ensure_auth()
-        self.archive_parts = self.driver.find_elements(
-            By.CSS_SELECTOR, 'div[data-download-uri] a[href*="takeout/download"]'
-        )
+        elements = self.driver.find_elements(By.CSS_SELECTOR, 'div[data-download-uri] a[href*="takeout/download"]')
+        self.archive_parts = [parse_part_index(el.get_attribute("href")) for el in elements]
         return self.archive_parts
 
     def handle_archive_page(self):
         self.navigate_to_archive()
 
     def download_archive_parts(self):
-        for i, archive_part in enumerate(self.archive_parts, 1):
-            path = self.download_with_reauth(archive_part)
+        total = len(self.archive_parts)
+        for i, target_index in enumerate(self.archive_parts, 1):
+
+            def match_part(d):
+                for link in d.find_elements(By.CSS_SELECTOR, 'div[data-download-uri] a[href*="takeout/download"]'):
+                    if parse_part_index(link.get_attribute("href")) == target_index:
+                        return link
+                return None
+
+            part = WebDriverWait(self.driver, self._timeout_s).until(match_part)
+            path = self.download_with_reauth(part)
             for try_n in range(1, 4):
                 try:
                     path.rename(self.target_archive_download_path.joinpath(path.name))
@@ -233,7 +267,7 @@ class TakeoutModel:
                     if try_n >= 3:
                         raise
                     logging.info(f"retrying download {i} after {try_n}")
-            logging.info(f"downloaded {i}/{len(self.archive_parts)} parts")
+            logging.info(f"downloaded {i}/{total} parts")
 
     def request_new_archive(self):
         self.driver.get(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
@@ -400,7 +434,10 @@ def main():
                 logging.error(f"failed to collect diagnostic info with {e}, ignoring")
             raise
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception as e:
+            logging.error(f"failed to quit driver: {e}")
 
     if model.state == TakeoutStates.complete.name and hasattr(model, "target_archive_download_path"):
         for f in model.target_archive_download_path.glob("*.zip"):

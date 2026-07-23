@@ -195,7 +195,9 @@ class GoogleLoginModel:
         if not self.driver.current_url.startswith(TAKEOUT_BASEURL):
             return False
         try:
-            WebDriverWait(self.driver, self._timeout_s).until(lambda d: not d.current_url.startswith(TAKEOUT_BASEURL))
+            WebDriverWait(self.driver, max(5.0, self._timeout_s / 3)).until(
+                lambda d: not d.current_url.startswith(TAKEOUT_BASEURL)
+            )
             return False
         except SeleniumTimeoutException as e:
             logging.debug(f"is_takeout_url:{e} returning true")
@@ -377,15 +379,15 @@ class GoogleLoginModel:
             transition(source=States.start, dest=States.auth_success, conditions=ref(is_takeout_url)),
             transition(
                 source=States.start,
-                dest=States.account_chooser,
-                conditions=ref(is_on_account_choose_form),
-                after=ref(select_and_proceed),
-            ),
-            transition(
-                source=States.start,
                 dest=States.password_entry,
                 conditions=ref(is_password_challenge),
                 after=ref(submit_password),
+            ),
+            transition(
+                source=States.start,
+                dest=States.account_chooser,
+                conditions=ref(is_on_account_choose_form),
+                after=ref(select_and_proceed),
             ),
             transition(
                 source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)
