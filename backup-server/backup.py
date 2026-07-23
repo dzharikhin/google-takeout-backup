@@ -25,6 +25,11 @@ from transitions.experimental.utils import with_model_definitions, add_transitio
 from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
 from cookies import sanitize_cookies
 
+
+class QuotaExceededError(Exception):
+    pass
+
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -158,6 +163,16 @@ class TakeoutModel:
         if remaining:
             raise RuntimeError(f"grid download dir not empty after delete_downloadable_files(): {remaining}")
 
+    def _quota_dialog(self):
+        elements = self.driver.find_elements(By.CSS_SELECTOR, 'div[role="dialog"][aria-modal="true"]')
+        return next((e for e in elements if e.is_displayed()), None)
+
+    def _dismiss_quota_dialog(self):
+        dialog = self._quota_dialog()
+        if dialog:
+            button = dialog.find_element(By.CSS_SELECTOR, '[data-mdc-dialog-action="ok"]')
+            button.click()
+
     def download_with_reauth(self, element):
         self._assert_grid_downloads_empty()
         self.driver.execute_script("arguments[0].click();", element)
@@ -181,6 +196,10 @@ class TakeoutModel:
                 logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
                 self.ensure_auth()
                 continue
+
+            if self._quota_dialog():
+                self._dismiss_quota_dialog()
+                raise QuotaExceededError("archive download quota exceeded")
 
             time.sleep(2)
 
@@ -258,7 +277,11 @@ class TakeoutModel:
                 return None
 
             part = WebDriverWait(self.driver, self._timeout_s).until(match_part)
-            path = self.download_with_reauth(part)
+            try:
+                path = self.download_with_reauth(part)
+            except QuotaExceededError:
+                self.quota_exceeded()
+                return
             for try_n in range(1, 4):
                 try:
                     path.rename(self.target_archive_download_path.joinpath(path.name))
@@ -322,6 +345,16 @@ class TakeoutModel:
         )
     )
     def select_archive(self): ...
+
+    @name_enricher(
+        add_transitions(
+            transition(
+                source=TakeoutStates.downloading,
+                dest=TakeoutStates.requesting_archive,
+            )
+        )
+    )
+    def quota_exceeded(self): ...
 
     @name_enricher(
         add_transitions(
