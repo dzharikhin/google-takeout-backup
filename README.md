@@ -22,17 +22,33 @@ Browser server runs [undetected-grid](https://github.com/ultrafunkamsterdam/unde
 
 All commands below run from the project root.
 
+## File stream encryption key (`FILE_STREAM_KEY`)
+
+Archive downloads stream from the Grid on port `4445`, encrypted with AES-256-GCM under a pre-shared key. Both servers must use the **same** key, or downloads fail with a GCM tag error.
+
+Generate it once and keep the value secret (do **not** put it in any `.env`):
+
+```sh
+openssl rand -hex 32
+```
+
+- **Browser server:** provide it inline when starting the Grid (see step 2).
+- **Backup server:** set it in the scheduler environment that runs `execute_backup.sh` (see step 6).
+
 1. Put your Google account email in `browser-server/.env`:
     ```env
     USER_E=you@gmail.com
     ```
     > `USER_E` can be overridden inline on the command when running manual-auth — e.g. to back up a different account — and the inline value takes precedence over `.env`.
 
-2. Start `undetected-grid` as a persistent service:
+2. Start `undetected-grid` as a persistent service with `FILE_STREAM_KEY` set (see generation above):
     ```sh
+    FILE_STREAM_KEY=<your-key> VERSION=$(uv version --short) \
     docker compose --env-file .env --env-file browser-server/.env \
       -f browser-server/docker-compose.yaml up -d undetected-grid
     ```
+    > The key is read from the shell environment; it is **not** loaded from `.env`. After `docker compose down && up`, set it again.
+    > Images are tagged with the project version from `pyproject.toml` via `uv version --short`.
     > `DISPLAY_MODE` selects where the browser renders:
     > - `virtual` (default) — renders on an Xvfb virtual display; no display required.
     > - `headed` — renders on your real `$DISPLAY`; run `xhost +local:` on the host first (XWayland on Wayland sessions) so the container can reach your X server.
@@ -41,7 +57,7 @@ All commands below run from the project root.
 
 3. Run `manual-auth` as a sidecar against the running grid to obtain auth state:
     ```sh
-    USER_P=$(read -rsp "Google password: " p && echo "$p") \
+    USER_P=$(read -rsp "Google password: " p && echo "$p") VERSION=$(uv version --short) \
     docker compose --env-file .env --env-file browser-server/.env \
       -f browser-server/docker-compose.yaml --profile manual up manual-auth
     ```
@@ -71,8 +87,7 @@ All commands below run from the project root.
     > `.auth_encoded` is the raw `driver.get_cookies()` output — values are already Grid-encrypted, so no external encoding is needed.
 5. create `.env` file with `ENCODED_PASS` set to your Grid-encoded password (Browser server, step 5)
     > After `browser-server` key rotation, regenerate `.auth_encoded` by re-running manual-auth and re-encode `ENCODED_PASS` via the web tool. For stable keys, set fixed `SK`/`PK` in `browser-server/.env`.
- 6. schedule command `docker-compose run backup` to execute in [backup-server](./backup-server) working directory frequently enough for the backup purposes
-    > there is [skeleton](./backup-server/execute_backup.sh) for scheduling execution
-    > but it requires local customization to be used
+ 6. set `FILE_STREAM_KEY` in the scheduler environment (e.g. the crontab line or a systemd unit) — it must match the value the browser server started with. Then schedule `execute_backup.sh` to run in the [backup-server](./backup-server) working directory frequently enough for your backup purposes
+    > [execute_backup.sh](./backup-server/execute_backup.sh) fails fast if `FILE_STREAM_KEY` is unset and derives the image tag version from `pyproject.toml` via `uv version --short`. It requires local customization (e.g. notification transport) before use.
   7. schedule command to reset browser from time to time(once a month is good enough)
       from `./browser-server` location

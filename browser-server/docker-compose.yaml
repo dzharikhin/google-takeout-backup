@@ -1,6 +1,7 @@
 services:
   undetected-grid:
     restart: always
+    image: gtb-undetected-grid:${VERSION:-latest}
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.undetected_grid
@@ -27,6 +28,7 @@ services:
 
   manual-auth:
     restart: no
+    image: gtb-manual-auth:${VERSION:-latest}
     build:
       context: ..
       dockerfile: browser-server/Dockerfile.manual-auth

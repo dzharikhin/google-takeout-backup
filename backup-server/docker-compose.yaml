@@ -1,6 +1,7 @@
 services:
   backup:
     restart: no
+    image: gtb-backup:${VERSION:-latest}
     build:
       context: ..
       dockerfile: backup-server/Dockerfile
