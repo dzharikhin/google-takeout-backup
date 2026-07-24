@@ -6,6 +6,7 @@ services:
       dockerfile: browser-server/Dockerfile.undetected_grid
     ports:
       - "4444:4444"
+      - "4445:4445"
     volumes:
       - ./browser-downloads:/app/grid-downloads
       - ./browser-local-storage:/app/browser-local-storage
@@ -14,6 +15,9 @@ services:
       DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
       DISPLAY: ${DISPLAY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FILE_STREAM_KEY: ${FILE_STREAM_KEY}
+      SK: ${SK}
+      PK: ${PK}
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:4444/status"]
       interval: 5s

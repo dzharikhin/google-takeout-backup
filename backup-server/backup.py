@@ -1,28 +1,33 @@
+import base64
 import csv
 import datetime
 import json
 import logging
 import os
 import pathlib
+import re
+import secrets
 import shutil
+import subprocess
 import sys
 import time
-import re
-import subprocess
 import zipfile
+
 import urllib3.exceptions
-
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from transitions import Event, Machine, State
+from transitions.experimental.utils import add_transitions, transition, with_model_definitions
 
-from transitions import Machine, State, Event
-from transitions.experimental.utils import with_model_definitions, add_transitions, transition
-
-from auth import GoogleLoginModel, GoogleLoginMachine, States, TAKEOUT_BASEURL
+from auth import TAKEOUT_BASEURL, GoogleLoginMachine, GoogleLoginModel, States
 from cookies import sanitize_cookies
 
 
@@ -205,6 +210,56 @@ class TakeoutModel:
 
         raise TimeoutError("Download failed")
 
+    def _stream_download(self, name):
+        """Stream-download a file from the Grid file-stream plugin (port 4445)
+        with PSK-authenticated AES-256-GCM decryption. Replaces driver.download_file()."""
+        nonce = secrets.token_bytes(16)
+        psk_hex = os.environ.get("FILE_STREAM_KEY", "")
+        if not psk_hex:
+            raise RuntimeError("FILE_STREAM_KEY environment variable is required for streaming downloads")
+
+        psk = bytes.fromhex(psk_hex)
+
+        browser_url = os.getenv("BROWSER_SERVER_URL", "http://localhost:4444")
+        stream_base = os.getenv("FILE_STREAM_URL", browser_url.replace(":4444", ":4445"))
+        url = f"{stream_base}/download/{self.driver.session_id}/{name}"
+
+        http = urllib3.PoolManager()
+        resp = http.request("GET", url, headers={"X-Stream-Nonce": base64.b64encode(nonce)}, preload_content=False)
+        if resp.status != 200:
+            raise RuntimeError(f"stream download failed: HTTP {resp.status} {resp.data.decode()}")
+
+        client_nonce = base64.b64decode(resp.headers["X-Stream-Nonce"])
+        if len(client_nonce) != 16:
+            raise RuntimeError(f"invalid client nonce length: {len(client_nonce)}")
+
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=client_nonce, info=b"takeout-file-stream-v1").derive(psk)
+        aesgcm = AESGCM(key)
+
+        plain_length = int(resp.headers["X-Plain-Length"])
+        dest = downloads_path.joinpath(name)
+
+        counter = 0
+        total = 0
+        with open(dest, "wb") as f:
+            while total < plain_length:
+                frame_len_bytes = resp.read(4)
+                frame_len = int.from_bytes(frame_len_bytes, "big")
+                blob = resp.read(frame_len)
+                nonce12 = counter.to_bytes(12, "big")
+                try:
+                    plaintext = aesgcm.decrypt(nonce12, blob, None)
+                except InvalidTag:
+                    raise RuntimeError(f"GCM tag verification failed for {name}")
+                f.write(plaintext)
+                total += len(plaintext)
+                counter += 1
+
+        resp.release_conn()
+        if total != plain_length:
+            raise RuntimeError(f"stream download truncated: expected {plain_length}, got {total}")
+        return dest
+
     def _take_completed_download(self, names):
         non_empty = []
         for name in names:
@@ -212,9 +267,15 @@ class TakeoutModel:
             base_delay = 2
             for attempt in range(max_retries):
                 try:
-                    self.driver.download_file(name, str(downloads_path))
+                    self._stream_download(name)
                     break
-                except (urllib3.exceptions.ProtocolError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
+                except (
+                    urllib3.exceptions.ProtocolError,
+                    ConnectionResetError,
+                    ConnectionAbortedError,
+                    OSError,
+                    InvalidTag,
+                ) as e:
                     if attempt == max_retries - 1:
                         raise RuntimeError(f"failed to download file {name} after {max_retries} attempts: {e}")
                     delay = base_delay * (2**attempt)

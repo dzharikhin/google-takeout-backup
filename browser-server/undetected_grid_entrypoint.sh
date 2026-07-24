@@ -20,11 +20,27 @@ cat > /app/selenium-grid.toml << 'EOF'
     webdriver-executable = "/usr/local/bin/geckodriver"
 EOF
 
-# Start Grid with plugin
-JAVA_JAR=/app/plugins/grid-secure-channel-plugin.jar
-if [ ! -f "$JAVA_JAR" ]; then
-  echo "Warning: grid-secure-channel-plugin JAR not found, continuing without plugin"
-  exec java $JAVA_OPTS -jar /app/selenium-server.jar standalone --config /app/selenium-grid.toml --log-level "${LOG_LEVEL:-INFO}"
+if [ -n "${PK:-}" ] && [ -n "${SK:-}" ]; then
+  cat >> /app/selenium-grid.toml <<EOF
+[encryption]
+public-key = "${PK}"
+private-key = "${SK}"
+EOF
+fi
+
+# Add file-stream system properties
+export JAVA_OPTS="$JAVA_OPTS -Dfilestream.key=${FILE_STREAM_KEY:-} -Dfilestream.port=${FILE_STREAM_PORT:-4445}"
+
+# Collect all plugin JARs
+EXT_JARS=""
+for jar in /app/plugins/*.jar; do
+    [ -f "$jar" ] || continue
+    EXT_JARS="${EXT_JARS:+$EXT_JARS:}$jar"
+done
+
+if [ -n "$EXT_JARS" ]; then
+    exec java $JAVA_OPTS -jar /app/selenium-server.jar --ext "$EXT_JARS" standalone --config /app/selenium-grid.toml --log-level "${LOG_LEVEL:-INFO}"
 else
-  exec java $JAVA_OPTS -jar /app/selenium-server.jar --ext "$JAVA_JAR" standalone --config /app/selenium-grid.toml --log-level "${LOG_LEVEL:-INFO}"
+    echo "Warning: no plugin JARs found, continuing without plugins"
+    exec java $JAVA_OPTS -jar /app/selenium-server.jar standalone --config /app/selenium-grid.toml --log-level "${LOG_LEVEL:-INFO}"
 fi

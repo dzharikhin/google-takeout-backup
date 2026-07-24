@@ -1,13 +1,16 @@
 # syntax=docker/dockerfile:1.4
-# Stage 1: Build the Grid plugin JAR
+# Stage 1: Build both Grid plugin JARs
 FROM maven:3.9-eclipse-temurin-17 AS plugin-build
 
 WORKDIR /build
-COPY grid-secure-channel-plugin/pom.xml .
-RUN mvn dependency:go-offline -B
-
-COPY grid-secure-channel-plugin/src ./src
-RUN mvn package -DskipTests -q
+COPY grid-secure-channel-plugin/pom.xml grid-secure-channel-plugin/
+COPY grid-file-stream-plugin/pom.xml grid-file-stream-plugin/
+RUN cd grid-secure-channel-plugin && mvn dependency:go-offline -B
+RUN cd grid-file-stream-plugin && mvn dependency:go-offline -B
+COPY grid-secure-channel-plugin/src grid-secure-channel-plugin/src
+COPY grid-file-stream-plugin/src grid-file-stream-plugin/src
+RUN cd grid-secure-channel-plugin && mvn package -DskipTests -q
+RUN cd grid-file-stream-plugin && mvn package -DskipTests -q
 
 # Stage 2: Build the runtime image
 FROM python:3.13-slim
@@ -17,7 +20,7 @@ ARG GECKODRIVER_VERSION=0.35.0
 
 # Install Firefox, Java, Xvfb
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    firefox-esr xvfb xauth openjdk-21-jre-headless python3 curl \
+    firefox-esr xvfb xauth openjdk-21-jdk python3 curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Firefox to /opt/undetected_firefox preserving symlinks
@@ -32,9 +35,10 @@ COPY pyproject.toml uv.lock ./
 ENV PATH="/app/.venv/bin:$PATH"
 RUN uv sync --frozen --no-install-project --no-default-groups --group browser
 
-# Copy the built plugin JAR from stage 1
+# Copy both built plugin JARs from stage 1
 RUN mkdir -p /app/plugins
-COPY --from=plugin-build /build/target/grid-secure-channel-plugin-*.jar /app/plugins/grid-secure-channel-plugin.jar
+COPY --from=plugin-build /build/grid-secure-channel-plugin/target/grid-secure-channel-plugin-*.jar /app/plugins/
+COPY --from=plugin-build /build/grid-file-stream-plugin/target/grid-file-stream-plugin-*.jar /app/plugins/
 
 # Copy entrypoint scripts
 COPY browser-server/xvfb-entrypoint.sh ./
