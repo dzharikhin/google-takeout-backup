@@ -87,7 +87,7 @@ openssl rand -hex 32
     > `.auth_encoded` is the raw `driver.get_cookies()` output — values are already Grid-encrypted, so no external encoding is needed.
 5. create `.env` file with `ENCODED_PASS` set to your Grid-encoded password (Browser server, step 5)
     > After `browser-server` key rotation, regenerate `.auth_encoded` by re-running manual-auth and re-encode `ENCODED_PASS` via the web tool. For stable keys, set fixed `SK`/`PK` in `browser-server/.env`.
- 6. set `FILE_STREAM_KEY` in the scheduler environment (e.g. the crontab line or a systemd unit) — it must match the value the browser server started with. Then schedule `execute_backup.sh` to run in the [backup-server](./backup-server) working directory frequently enough for your backup purposes
+6. set `FILE_STREAM_KEY` in the scheduler environment (e.g. the crontab line or a systemd unit) — it must match the value the browser server started with. Then schedule `execute_backup.sh` to run in the [backup-server](./backup-server) working directory frequently enough for your backup purposes
     > [execute_backup.sh](./backup-server/execute_backup.sh) fails fast if `FILE_STREAM_KEY` is unset and derives the image tag version from `pyproject.toml` via `uv version --short`. It requires local customization (e.g. notification transport) before use.
-  7. schedule command to reset browser from time to time(once a month is good enough)
+7. schedule command to reset browser from time to time(once a month is good enough)
       from `./browser-server` location

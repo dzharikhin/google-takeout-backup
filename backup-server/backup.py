@@ -36,12 +36,12 @@ class QuotaExceededError(Exception):
 
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     stream=sys.stdout,
     force=True,
 )
-logging.getLogger("transitions.core").setLevel(logging.ERROR)
+logging.getLogger("transitions.core").setLevel(logging.DEBUG)
 
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12")))
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
