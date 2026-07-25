@@ -8,9 +8,7 @@ if ! VERSION=$(uv version --short 2>/dev/null); then
   echo "Could not derive image version via 'uv version --short' (is uv installed and pyproject.toml reachable?)." 1>&2
   exit 1
 fi
-export FILE_STREAM_KEY
-export VERSION
-docker-compose run --rm --remove-orphans backup > /tmp/gtb.out 2>&1
+VERSION="$VERSION" docker compose --env-file ../.env --env-file .env run --rm --remove-orphans backup > /tmp/gtb.out 2>&1
 if [ $? -ne 0 ]; then
   echo "Backup run has failed"
   cat /tmp/gtb.out
@@ -20,4 +18,4 @@ else
   SUBJECT="Google Takeout Backup run is successful"
 fi
 printf "Subject: $SUBJECT\n\n%s" "$(cat /tmp/gtb.out)"
-docker-compose down --volumes
+VERSION="$VERSION" docker compose --env-file ../.env --env-file .env down --volumes

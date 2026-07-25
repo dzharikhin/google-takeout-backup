@@ -54,15 +54,18 @@ openssl rand -hex 32
     > - `headed` — renders on your real `$DISPLAY`; run `xhost +local:` on the host first (XWayland on Wayland sessions) so the container can reach your X server.
     > To override, set `DISPLAY_MODE=headed` in `browser-server/.env` or inline on the command.
     > The login is automatic; `manual-auth` is just a one-shot sidecar.
+    > (if you run docker with sudo, see [If docker requires sudo](#if-docker-requires-sudo) — the key is otherwise silently stripped).
 
 3. Run `manual-auth` as a sidecar against the running grid to obtain auth state:
     ```sh
     USER_P=$(read -rsp "Google password: " p && echo "$p") VERSION=$(uv version --short) \
     docker compose --env-file .env --env-file browser-server/.env \
-      -f browser-server/docker-compose.yaml --profile manual up manual-auth
+      -f browser-server/docker-compose.yaml --profile manual up --no-deps manual-auth
     ```
     > `USER_P` is captured by a hidden `read` prompt and passed as an env var to compose (not written to disk or shell history).
     > The browser runs with a visible window to avoid bot detection; `DISPLAY_MODE` only selects where it renders (as noted in step 2).
+    > `--no-deps` is required: without it, compose reconciles `undetected-grid` and, since this command doesn't pass `FILE_STREAM_KEY`, recreates the grid (wiping the browser session and regenerating the ECIES keys). The grid must already be running from step 2.
+    > (if you run docker with sudo, see [If docker requires sudo](#if-docker-requires-sudo) — the password is otherwise silently stripped).
 
 4. **Store the auth state.** When `manual-auth` finishes it writes `browser-server/browser-downloads/.auth_encoded` (the values are already Grid-encrypted). Copy this file to `backup-server/.auth_encoded` — it is the cookie jar the backup server later loads.
     ```sh
@@ -77,6 +80,35 @@ openssl rand -hex 32
     Look for "Encode with: https://dzharikhin.github.io/ecies/?pk=" in the logs, open that link, encode your password, and save the result as `ENCODED_PASS` in `backup-server/.env`.
     > Encryption keys are generated on start by default, so after a restart you must re-run manual-auth (step 3) to regenerate `.auth_encoded` and re-encode `ENCODED_PASS` (step 5). To keep keys stable across restarts, set fixed `SK`/`PK` in `browser-server/.env`.
 
+## If docker requires `sudo`
+
+If your user isn't in the `docker` group, prefix docker commands with `sudo`. But
+**don't** write `sudo VAR=value docker compose …`: sudo's default `env_reset`
+policy strips inline `VAR=value` assignments, so the command runs with `VAR`
+empty. This fails silently — the Grid starts, but with `FILE_STREAM_KEY` blank it
+skips binding port `4445` (see `FileStreamPlugin.java`) and the backup later dies
+with `Connection refused`.
+
+Wrap the assignments with `env`, which sets them *after* sudo's environment
+reset, so they survive without being `export`ed:
+
+```sh
+sudo env \
+  FILE_STREAM_KEY=$(read -rsp "Enter secret: " p && echo "$p") \
+  VERSION=$(uv version --short) \
+  docker compose --env-file .env --env-file browser-server/.env \
+    -f browser-server/docker-compose.yaml up -d undetected-grid
+```
+
+- The secret is captured by `$(read …)` and consumed inline — it is never
+  `export`ed and never becomes a shell variable in your session.
+- The same wrapping works for `manual-auth` (`USER_P=$(read …)`) and any other
+  `VAR=value` command.
+- The value is briefly present in the process argv while `env` runs — the same
+  exposure your plain `VAR=$(read …)` form already has. If that matters, add your
+  user to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in)
+  and drop `sudo` entirely, so the plain no-`sudo` commands above work as-is.
+
 ## Backup server
 1. go to [backup-server](./backup-server)
    - `keys_RU.csv` - locale-dependent button names to interact with browser UI controls. If you need another locale, see how to use `GOOGLE_LANG` env param
@@ -88,6 +120,34 @@ openssl rand -hex 32
 5. create `.env` file with `ENCODED_PASS` set to your Grid-encoded password (Browser server, step 5)
     > After `browser-server` key rotation, regenerate `.auth_encoded` by re-running manual-auth and re-encode `ENCODED_PASS` via the web tool. For stable keys, set fixed `SK`/`PK` in `browser-server/.env`.
 6. set `FILE_STREAM_KEY` in the scheduler environment (e.g. the crontab line or a systemd unit) — it must match the value the browser server started with. Then schedule `execute_backup.sh` to run in the [backup-server](./backup-server) working directory frequently enough for your backup purposes
-    > [execute_backup.sh](./backup-server/execute_backup.sh) fails fast if `FILE_STREAM_KEY` is unset and derives the image tag version from `pyproject.toml` via `uv version --short`. It requires local customization (e.g. notification transport) before use.
-7. schedule command to reset browser from time to time(once a month is good enough)
+    > [execute_backup.sh](./backup-server/execute_backup.sh) fails fast if `FILE_STREAM_KEY` is unset and derives the image tag version from `pyproject.toml` via `uv version --short`. It requires local customization (e.g. notification transport) before use. (to run with bare docker compose instead, see [Running the backup with bare docker compose](#running-the-backup-with-bare-docker-compose)).
+ 7. schedule command to reset browser from time to time(once a month is good enough)
       from `./browser-server` location
+
+## Running the backup with bare docker compose
+
+`execute_backup.sh` is a thin wrapper: it checks `FILE_STREAM_KEY`, derives the
+version, runs `docker compose run`, captures output for a mail notifier, then
+tears the container down. If your scheduler already handles those pieces (or you
+prefer to invoke compose directly), run from the `backup-server/` directory:
+
+```sh
+FILE_STREAM_KEY=$(read -rsp "Enter FILE_STREAM_KEY: " p && echo "$p") VERSION="$(uv version --short)" \
+  docker compose --env-file .env --env-file backup-server/.env \
+    -f backup-server/docker-compose.yaml run --rm --remove-orphans backup
+docker compose --env-file .env --env-file backup-server/.env \
+  -f backup-server/docker-compose.yaml down --volumes
+```
+
+- The first `run` builds the `gtb-backup:$VERSION` image from `Dockerfile` if it
+  is missing; rebuild explicitly with `docker compose build` whenever source or
+  dependencies change.
+- `docker compose` auto-loads `backup-server/.env` from the current directory, so
+  `ENCODED_PASS` and the other `${VAR}` interpolations resolve without `--env-file`.
+  `tty: true` from `docker-compose.yaml` applies automatically.
+ - `--rm --remove-orphans` plus the trailing `down --volumes` mirror
+  `execute_backup.sh` (`backup-server/execute_backup.sh:14,25`).
+- `FILE_STREAM_KEY` is captured by a hidden `read` prompt (same pattern as the grid
+  launch); it must match the value used when starting the browser server. If docker
+  needs `sudo`, wrap with `sudo env FILE_STREAM_KEY=$(read …)` (see [If docker
+  requires sudo](#if-docker-requires-sudo)).
