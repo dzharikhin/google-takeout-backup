@@ -1,6 +1,7 @@
 import base64
 import csv
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -450,6 +451,67 @@ def encode_takeout_timestamp(val):
     return val.strftime("%Y%m%dT%H%M%SZ")
 
 
+def merge_into_backup(src_root: pathlib.Path, dst_root: pathlib.Path) -> None:
+    copied = 0
+    skipped = 0
+    renamed = 0
+
+    for file in src_root.rglob("*"):
+        if not file.is_file():
+            continue
+
+        rel = file.relative_to(src_root)
+        target = dst_root / rel
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        if not target.exists():
+            shutil.copy2(file, target)
+            copied += 1
+            continue
+
+        src_size = file.stat().st_size
+        dst_size = target.stat().st_size
+
+        if src_size != dst_size:
+            dest = _find_available_path(target)
+            shutil.copy2(file, dest)
+            renamed += 1
+            continue
+
+        src_hash = _file_sha256(file)
+        dst_hash = _file_sha256(target)
+
+        if src_hash == dst_hash:
+            skipped += 1
+            continue
+
+        dest = _find_available_path(target)
+        shutil.copy2(file, dest)
+        renamed += 1
+
+    logging.info(f"merge complete: {copied} copied, {skipped} skipped, {renamed} renamed")
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    sha256 = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1048576), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _find_available_path(path: pathlib.Path) -> pathlib.Path:
+    stem = path.stem
+    suffix = path.suffix
+    counter = 1
+    while True:
+        candidate = path.parent / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def load_auth_cookies(auth_json_path):
     auth_data = json.loads(auth_json_path.read_text())
     if isinstance(auth_data, list):
@@ -579,7 +641,7 @@ def main():
             shutil.move(f, processed_photos_path.joinpath(f.name))
         all_photos_path.rmdir()
         logging.info("processed archives")
-        shutil.copytree(processed_photos_path, backup_path, dirs_exist_ok=True)
+        merge_into_backup(processed_photos_path, backup_path)
         shutil.rmtree(model.target_archive_download_path)
         timestamp_path.write_text(encode_takeout_timestamp(model.target_archive_timestamp))
         logging.info(f"successfully backed up up to {model.target_archive_timestamp}")
