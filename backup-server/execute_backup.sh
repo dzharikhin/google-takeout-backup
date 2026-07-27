@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+cd "$(dirname "$0")"
 if [ -z "${FILE_STREAM_KEY:-}" ]; then
   echo "FILE_STREAM_KEY is not set. Generate it with 'openssl rand -hex 32'," 1>&2
   echo "then set it in the scheduler environment (e.g. crontab) and re-run." 1>&2
