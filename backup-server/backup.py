@@ -32,6 +32,11 @@ from auth import TAKEOUT_BASEURL, GoogleLoginMachine, GoogleLoginModel, States
 from cookies import sanitize_cookies
 
 
+class _SuppressSkipBinding(logging.Filter):
+    def filter(self, record):
+        return "Skip binding of" not in record.getMessage()
+
+
 class QuotaExceededError(Exception):
     pass
 
@@ -42,7 +47,9 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
-logging.getLogger("transitions.core").setLevel(logging.DEBUG)
+transitions_logger = logging.getLogger("transitions.core")
+transitions_logger.setLevel(logging.DEBUG)
+transitions_logger.addFilter(_SuppressSkipBinding())
 
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12")))
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
