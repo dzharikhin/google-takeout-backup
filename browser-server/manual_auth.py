@@ -1,124 +1,169 @@
-import asyncio
-import csv
+import json
+import logging
 import os
 import pathlib
-import random
 import sys
-import tempfile
+import threading
+import time
 
-from playwright.async_api import async_playwright
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
 
-downloads_path = pathlib.Path("/app/browser-downloads")
+from auth import States, GoogleLoginModel, GoogleLoginMachine, TAKEOUT_BASEURL
+from cookies import sanitize_cookies
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("transitions.core").setLevel(logging.ERROR)
+
+downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
-text_labels_source = pathlib.Path(f"keys_{os.getenv("GOOGLE_LANG", "RU")}.csv")
-
-with text_labels_source.open(mode="rt") as labels_data:
-    text_labels = {row[0]: row[1] for row in csv.reader(labels_data, delimiter="=")}
 
 
-async def main():
-    print(os.getenv("DISPLAY"))
-    manual_auth_wait = [1]
+def main():
+    print(f"display: {os.getenv('DISPLAY')}")
 
-    async def handle_manual_auth_close(page):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_dir = pathlib.Path(tmp)
-            file_path = tmp_dir.joinpath("file.json")
-            await page.context.storage_state(path=file_path)
-            print()
-            print(file_path.read_text())
-            print()
-            manual_auth_wait.pop()
+    display_mode = os.getenv("DISPLAY_MODE", "virtual")
+    print(f"{display_mode=}")
 
-    async with async_playwright() as playwright:
-        headless_mode = os.getenv("HEADLESS_MODE", "headed")
-        print(f"executing script with {headless_mode=}, {default_timeout=}")
-        browser = await playwright.chromium.launch(
-            args=sum(
-                [
-                    [
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-web-security",
-                        "--disable-infobars",
-                        "--disable-extensions",
-                        "--start-maximized",
-                        "--disable-gpu",
-                    ]
-                ],
-                ["--ozone-platform=wayland"] if headless_mode == "headed" else [],
-            ),
-            ignore_default_args=[
-                "--disable-component-extensions-with-background-pages"
-            ],
-            headless=bool(headless_mode.lower() == "headless".lower()),
-        )
-        page = await browser.new_page(
-            viewport={"width": 1280, "height": 1024},
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        )
-        page.set_default_timeout(default_timeout)
-        page.on("close", handle_manual_auth_close)
+    options = Options()
+    options.set_capability("se:downloadsEnabled", True)
+    options.set_capability("webSocketUrl", True)
+
+    driver = webdriver.Remote(
+        command_executor="http://localhost:4444",
+        options=options,
+    )
+    print("Session capabilities:", json.dumps(driver.capabilities, default=str))
+    driver.set_script_timeout(default_timeout / 1000)
+    driver.implicitly_wait(default_timeout / 1000)
+
+    def wait_for_session_cookies():
+        deadline = time.monotonic() + 30
+        last_names = []
+        while time.monotonic() < deadline:
+            current = driver.get_cookies()
+            last_names = [c["name"] for c in current]
+            psidts = [n for n in last_names if "PSIDTS" in n]
+            print(f"poll: {len(last_names)} cookies, PSIDTS present: {psidts}")
+            if "__Secure-1PSIDTS" in last_names and "__Secure-3PSIDTS" in last_names:
+                print("PSIDTS cookies present, capturing")
+                return current
+            time.sleep(2)
+        print(f"PSIDTS did not appear within 30s; capturing {len(last_names)} cookies anyway")
+        return driver.get_cookies()
+
+    def capture_and_merge_accounts_cookies(base_cookies):
+        print("Capturing accounts.google.com cookies for full session")
+        driver.get("https://accounts.google.com/")
+        time.sleep(3)
+        accounts_cookies = driver.get_cookies()
+
+        merged = base_cookies.copy()
+        seen = {(c["domain"], c["name"]): c for c in merged}
+
+        for cookie in accounts_cookies:
+            key = (cookie["domain"], cookie["name"])
+            seen[key] = cookie
+
+        merged = list(seen.values())
+        print(f"Merged {len(accounts_cookies)} accounts cookies, total {len(merged)} cookies")
+        return merged
+
+    def handle_manual_auth_close(cookies=None):
         try:
-            await page.goto("https://takeout.google.com/settings/takeout/custom/photos")
-            if headless_mode == "headed":
-                print(
-                    f"{headless_mode=}: expecting manual execution. Just close browser window when auth is successfull"
-                )
-            else:
-                print(f"{headless_mode=}: executing automatic login script")
-                if page.url.startswith("https://accounts.google.com/v3/signin"):
-                    email = os.getenv("USER_E")
-                    email_field = page.locator("input[type=email]").or_(page.locator("input#identifierId"))
-                    await email_field.focus()
-                    await email_field.press_sequentially(email, delay=random.randint(11, 49))
-                    await page.wait_for_timeout(1666)
-                    await page.locator(f"button#identifierNext").or_(
-                        page.locator(f"div#identifierNext")
-                    ).click()
+            if cookies is None:
+                cookies = wait_for_session_cookies()
+                cookies = capture_and_merge_accounts_cookies(cookies)
 
-                    await page.wait_for_selector("input[type=password]", timeout=default_timeout)
-                    await page.focus(selector="input[type=password]")
-                    password = os.getenv("USER_P")
-                    await page.type(
-                        selector="input[type=password]",
-                        text=password,
-                        delay=random.randint(11, 49),
-                    )
-                    await page.wait_for_timeout(random.randint(1523, 1997))
-                    await page.locator(f"button#passwordNext").or_(
-                        page.locator(f"div#passwordNext")
-                    ).click(timeout=default_timeout)
-                if page.url.startswith("https://accounts.google.com/v3/signin/challenge/skotp"):
-                    await page.get_by_text(text_labels["try.another.factor"]).click()
-                    await page.wait_for_url(
-                        "https://accounts.google.com/v3/signin/challenge"
-                    )
-                if page.url.startswith(
-                    "https://accounts.google.com/v3/signin/challenge"
-                ):
-                    # await page.screenshot(path=downloads_path.joinpath("2fa_page.jpg")
-                    await page.locator(f'div[data-challengetype="39"]').click(timeout=default_timeout)
-                    await page.wait_for_url(
-                        "https://takeout.google.com/settings/takeout/custom/photos"
-                    )
-                    await handle_manual_auth_close(page)
-        except Exception:
+            file_path = downloads_path.joinpath(".auth_encoded")
+            data = {"cookies": sanitize_cookies(cookies)}
+            file_path.write_text(json.dumps(data))
+
+            print()
+            print(f"auth state saved to {file_path}")
+            print("copy browser-server/browser-downloads/.auth_encoded to backup-server/.auth_encoded")
+            print()
+        finally:
+            driver.quit()
+
+    try:
+        driver.get(TAKEOUT_BASEURL)
+        print(f"Current URL: {driver.current_url}")
+
+        if "virtual" == display_mode:
+            print(f"{display_mode=}: executing automatic login script")
+            if driver.current_url.startswith("https://accounts.google.com/v3/signin"):
+                model = GoogleLoginModel(driver=driver, timeout=default_timeout)
+                machine = GoogleLoginMachine(model, states=States.as_list(), initial=States.start, queued=True)
+                model.sign_in()
+                machine.ensure_auth()
+                print("login script is finished")
+
+            if driver.current_url.startswith(TAKEOUT_BASEURL):
+                handle_manual_auth_close()
+                return
+        else:
+            print(f"{display_mode=}: log in in the visible window; cookies are saved once Takeout loads")
+            print("(closing the browser before that aborts without saving)")
+
             try:
-                if page and not page.is_closed():
-                    downloads_path.joinpath(f"error_url.txt").write_text(page.url)
-                    downloads_path.joinpath(f"error_html.html").write_text(
-                        await page.content()
-                    )
-                    await page.screenshot(
-                        path=downloads_path.joinpath(f"error_page_screenshot.jpg")
-                    )
+                my_context = driver.current_window_handle
+                done = threading.Event()
+
+                def on_load(data):
+                    url = getattr(data, "url", None) or (data.get("url") if isinstance(data, dict) else "") or ""
+                    if url.startswith(TAKEOUT_BASEURL):
+                        print(f"BiDi load event for takeout URL: {url}")
+                        done.set()
+
+                driver.browsing_context.add_event_handler("load", on_load, contexts=[my_context])
+
+                while not done.wait(1.0):
+                    try:
+                        _ = driver.current_url
+                    except Exception:
+                        print("Browser closed before reaching Takeout; aborting without saving.")
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        return
+
+                print("Reached Takeout — saving auth state...")
+                try:
+                    cookies = wait_for_session_cookies()
+                    cookies = capture_and_merge_accounts_cookies(cookies)
+                except Exception as e:
+                    print(f"Failed to fetch cookies; aborting. {e}", file=sys.stderr)
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    return
+                handle_manual_auth_close(cookies=cookies)
             except Exception as e:
-                print(f"failed to collect diagnostic info: {e}", file=sys.stderr)
-            raise
-        while manual_auth_wait:
-            await asyncio.sleep(1)
+                print(f"BiDi unavailable (Grid may not expose webSocketUrl): {e}", file=sys.stderr)
+                print("Falling back to polled URL detection (with bounded race).", file=sys.stderr)
+                time.sleep(1)
+                if not driver.current_url.startswith(TAKEOUT_BASEURL):
+                    print("User navigated away from takeout, saving auth state...")
+                    handle_manual_auth_close()
+                    return
+                else:
+                    print("URL is takeout, saving...")
+                    handle_manual_auth_close()
+                    return
+
+    except Exception:
+        try:
+            if driver and not driver.current_url.startswith("about:"):
+                downloads_path.joinpath("error_url.txt").write_text(driver.current_url)
+                downloads_path.joinpath("error_html.html").write_text(driver.page_source)
+                driver.save_screenshot(downloads_path.joinpath("error_page_screenshot.png"))
+        except Exception as e:
+            print(f"failed to collect diagnostic info: {e}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

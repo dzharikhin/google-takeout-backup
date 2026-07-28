@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1.4
+# Stage 1: Build both Grid plugin JARs
+FROM maven:3.9-eclipse-temurin-17 AS plugin-build
+
+WORKDIR /build
+COPY grid-secure-channel-plugin/pom.xml grid-secure-channel-plugin/
+COPY grid-file-stream-plugin/pom.xml grid-file-stream-plugin/
+RUN cd grid-secure-channel-plugin && mvn dependency:go-offline -B
+RUN cd grid-file-stream-plugin && mvn dependency:go-offline -B
+COPY grid-secure-channel-plugin/src grid-secure-channel-plugin/src
+COPY grid-file-stream-plugin/src grid-file-stream-plugin/src
+RUN cd grid-secure-channel-plugin && mvn package -DskipTests -q
+RUN cd grid-file-stream-plugin && mvn package -DskipTests -q
+
+# Stage 2: Build the runtime image
+FROM python:3.13-slim
+
+ARG SELENIUM_VERSION=4.45.0
+ARG GECKODRIVER_VERSION=0.35.0
+
+# Install Firefox, Java, Xvfb
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    firefox-esr xvfb xauth openjdk-21-jdk python3 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Firefox to /opt/undetected_firefox preserving symlinks
+# undetected_geckodriver patches libxul.so below (build time)
+RUN cp -a /usr/lib/firefox-esr /opt/undetected_firefox
+RUN ln -s firefox-esr /opt/undetected_firefox/firefox
+
+# Set up Python environment
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+ENV PATH="/app/.venv/bin:$PATH"
+RUN uv sync --frozen --no-install-project --no-default-groups --group browser
+
+# Copy both built plugin JARs from stage 1
+RUN mkdir -p /app/plugins
+COPY --from=plugin-build /build/grid-secure-channel-plugin/target/grid-secure-channel-plugin-*.jar /app/plugins/
+COPY --from=plugin-build /build/grid-file-stream-plugin/target/grid-file-stream-plugin-*.jar /app/plugins/
+
+# Copy entrypoint scripts
+COPY browser-server/xvfb-entrypoint.sh ./
+COPY browser-server/undetected_grid_entrypoint.sh ./
+
+# Build-time libxul.so patch using undetected_geckodriver
+RUN python3 <<'PY'
+from undetected_geckodriver.constants import TO_REPLACE_STRING
+from undetected_geckodriver.utils import generate_random_string
+p = '/opt/undetected_firefox/libxul.so'
+d = open(p, 'rb').read()
+if TO_REPLACE_STRING not in d:
+    raise RuntimeError(f"TO_REPLACE_STRING not found in {p}")
+d = d.replace(TO_REPLACE_STRING, generate_random_string(len(TO_REPLACE_STRING)).encode())
+if d.count(TO_REPLACE_STRING) > 0:
+    raise RuntimeError(f"TO_REPLACE_STRING replacement failed: still present {d.count(TO_REPLACE_STRING)} times")
+open(p, 'wb').write(d)
+PY
+
+# Install geckodriver
+RUN curl -fSL -o /tmp/geckodriver.tar.gz \
+    https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz \
+    && tar -xzf /tmp/geckodriver.tar.gz -C /usr/local/bin \
+    && rm /tmp/geckodriver.tar.gz
+
+# Download Selenium Server JAR
+RUN curl -fSL -o /app/selenium-server.jar \
+    https://github.com/SeleniumHQ/selenium/releases/download/selenium-${SELENIUM_VERSION}/selenium-server-${SELENIUM_VERSION}.jar
+
+WORKDIR /app
+
+ENTRYPOINT ["sh", "/app/xvfb-entrypoint.sh"]
+CMD ["sh", "/app/undetected_grid_entrypoint.sh"]

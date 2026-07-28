@@ -1,0 +1,15 @@
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+ENV PATH="/app/.venv/bin:$PATH"
+ARG PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=$PYTHONUNBUFFERED
+RUN uv sync --frozen --no-install-project --no-default-groups --group manual-auth
+
+COPY auth.py cookies.py ./
+COPY browser-server/manual_auth.py ./
+COPY keys_EN.csv keys_RU.csv ./
+
+CMD ["python", "manual_auth.py"]

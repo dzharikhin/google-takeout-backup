@@ -1,90 +1,47 @@
 services:
-  proxy:
+  undetected-grid:
     restart: always
-    image: python:3.13-alpine
-    entrypoint: [ "/app/proxy-entrypoint.sh" ]
-    command: [ "/app/webs.py" ]
-    tty: true
-    init: true
-    stdin_open: true
-    volumes:
-      - ./proxy-entrypoint.sh:/app/proxy-entrypoint.sh:ro
-      - ./webs.py:/app/webs.py:ro
+    image: gtb-undetected-grid:${VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: browser-server/Dockerfile.undetected_grid
     ports:
-      - "${PROXY_PUBLIC_PORT}:8080"
-    environment:
-      BROWSER_URL: ws://browser:${BROWSER_PORT}/srv
-    networks:
-      - secure_net
-    profiles:
-      - "headed"
-      - "virtual"
-      - "headless"
-
-  #  launch browser headless - faster and more efficient, but more often is detected as a bot
-  browser-headless:
-    restart: always
-    image: mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
-    entrypoint: [ "/app/browser-server-entrypoint.sh" ]
-    init: true
-    stdin_open: true
-    tty: true
-    environment:
-      COMPOSE_PROFILES: ${COMPOSE_PROFILES}
-      BROWSER_PORT: ${BROWSER_PORT}
-      PLAYWRIGHT_VERSION: ${PLAYWRIGHT_VERSION}
+      - "4444:4444"
+      - "4445:4445"
     volumes:
-      - ./browser-server-entrypoint.sh:/app/browser-server-entrypoint.sh:ro
-      - ./browser-launch-params.json:/app/browser-launch-params.json:ro
-      - ./browser-local-storage/:/app/browser-local-storage
-      - ./browser-downloads/:/app/browser-downloads
-    networks:
-      secure_net:
-        aliases:
-          - browser
-    expose:
-      - "${BROWSER_PORT}"
-    profiles:
-      - "headless"
-
-  #  launch browser headed on virtual display - helps to work out anti-bot protection
-  browser-virtual:
-    extends: browser-headless
-    profiles: !override
-      - "virtual"
-
-#  launch browser headed - maybe for debug purposes
-  browser-headed:
-    extends: browser-headless
+      - ./browser-downloads:/app/grid-downloads
+      - ./browser-local-storage:/app/browser-local-storage
+      - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
-      XDG_RUNTIME_DIR: /tmp
-      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
-    volumes:
-      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/${WAYLAND_DISPLAY:-wayland-0}
-    devices:
-      - /dev/dri:/dev/dri
-    profiles: !override
-      - "headed"
+      DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
+      DISPLAY: ${DISPLAY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FILE_STREAM_KEY: ${FILE_STREAM_KEY}
+      SK: ${SK}
+      PK: ${PK}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:4444/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
 
-  browser-manual:
-    extends: browser-headed
-    image: mcr.microsoft.com/playwright/python:v1.54.0-noble
+  manual-auth:
     restart: no
-    entrypoint: [ "/bin/sh" ]
-    command: [ "-c", "pip install --root-user-action=ignore --disable-pip-version-check -q playwright==${PLAYWRIGHT_VERSION} && if [ \"$${HEADLESS_MODE}\" = \"virtual\" ]; then echo 'running on virtual display' && cd /app && exec xvfb-run -a --error-file=/app/browser-downloads/xvfb-manual.log python /app/manual_auth.py; else echo 'running on real display' && cd /app && exec python /app/manual_auth.py; fi" ]
+    image: gtb-manual-auth:${VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: browser-server/Dockerfile.manual-auth
+    depends_on:
+      undetected-grid:
+        condition: service_healthy
+    network_mode: "service:undetected-grid"
     environment:
-      HEADLESS_MODE: ${HEADLESS_MODE:-virtual} # headed, headless
+      DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
       USER_E: ${USER_E}
       USER_P: ${USER_P}
-      TIMEOUT_MILLIS: ${TIMEOUT_MILLIS:-30000}
-      GOOGLE_LANG: EN
     volumes:
-      - ./manual_auth.py:/app/manual_auth.py:ro
-      - ./../keys_RU.csv:/app/keys_RU.csv:ro
-      - ./../keys_EN.csv:/app/keys_EN.csv:ro
-    profiles: !override
+      - ./browser-downloads:/app/browser-downloads
+    profiles:
       - "manual"
 
-networks:
-  secure_net:
-    external: true
