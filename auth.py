@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from urllib.parse import parse_qs, urlparse
 
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -79,6 +80,25 @@ class GoogleLoginModel:
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         logging.debug("page is in load state, proceeding")
+
+    def wait_for_navigation_settle(self):
+        deadline = time.monotonic() + self._timeout_s
+        while True:
+            self.wait_for_page_load()
+            self.is_refresh_complete()
+            if self.driver.current_url.startswith(TAKEOUT_BASEURL):
+                return
+            last_url = self.driver.current_url
+            url_stable = True
+            for _ in range(3):
+                time.sleep(1.0)
+                current_url = self.driver.current_url
+                if current_url != last_url:
+                    url_stable = False
+                    break
+                last_url = current_url
+            if url_stable or time.monotonic() >= deadline:
+                return
 
     def is_refresh_complete(self):
         logging.debug("is_refresh_complete")
@@ -428,6 +448,7 @@ class GoogleLoginMachine(Machine):
 
     def __init__(self, model, **kwargs):
         self._auth_model = model
+        kwargs.setdefault("prepare_event", ref(GoogleLoginModel.wait_for_navigation_settle))
         super().__init__(model, **kwargs)
 
     def ensure_auth(self):
