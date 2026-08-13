@@ -12,6 +12,11 @@ services:
       - ./browser-downloads:/app/grid-downloads
       - ./browser-local-storage:/app/browser-local-storage
       - /tmp/.X11-unix:/tmp/.X11-unix
+    deploy:
+      resources:
+        limits:
+          memory: "${GRID_MEM_LIMIT:-4G}"
+          cpus: "${GRID_CPU_LIMIT:-3}"
     environment:
       DISPLAY_MODE: ${DISPLAY_MODE:-virtual}
       DISPLAY: ${DISPLAY}

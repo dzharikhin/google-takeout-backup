@@ -5,6 +5,11 @@ services:
     build:
       context: ..
       dockerfile: backup-server/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: "${BACKUP_MEM_LIMIT:-1G}"
+          cpus: "${BACKUP_CPU_LIMIT:-2}"
     env_file:
       - ../.env
       - .env
