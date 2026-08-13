@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("transitions.core").setLevel(logging.ERROR)
 
 downloads_path = pathlib.Path("./browser-downloads")
-default_timeout = float(os.getenv("TIMEOUT_MILLIS", "30000"))
+default_timeout = float(os.getenv("TIMEOUT_MILLIS") or "30000")
 
 
 def main():

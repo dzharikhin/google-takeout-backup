@@ -52,8 +52,8 @@ transitions_logger.setLevel(logging.DEBUG)
 transitions_logger.addFilter(_SuppressSkipBinding())
 
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12")))
-TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS", "30000"))
-DOWNLOAD_TIMEOUT_MILLIS = 3_600_000
+TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS") or "30000")
+DOWNLOAD_TIMEOUT_MILLIS = int(os.getenv("DOWNLOAD_TIMEOUT_MILLIS") or "3_600_000")
 
 auth_json_path = pathlib.Path(".auth_encoded")
 downloads_path = pathlib.Path("downloads")
