@@ -54,6 +54,7 @@ transitions_logger.addFilter(_SuppressSkipBinding())
 BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESHNESS_THRESHOLD_HOURS", "12")))
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS") or "30000")
 DOWNLOAD_TIMEOUT_MILLIS = int(os.getenv("DOWNLOAD_TIMEOUT_MILLIS") or "3_600_000")
+DOWNLOAD_ATTEMPTS = int(os.getenv("DOWNLOAD_ATTEMPTS") or "5")
 
 auth_json_path = pathlib.Path(".auth_encoded")
 downloads_path = pathlib.Path("downloads")
@@ -345,12 +346,27 @@ class TakeoutModel:
                         return link
                 return None
 
-            part = WebDriverWait(self.driver, self._timeout_s).until(match_part)
-            try:
-                path = self.download_with_reauth(part)
-            except QuotaExceededError:
-                self.quota_exceeded()
-                return
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                try:
+                    part = WebDriverWait(self.driver, self._timeout_s).until(match_part)
+                    path = self.download_with_reauth(part)
+                except QuotaExceededError:
+                    self.quota_exceeded()
+                    return
+                except (TimeoutError, TimeoutException) as e:
+                    if attempt == DOWNLOAD_ATTEMPTS:
+                        raise
+                    logging.warning(
+                        f"part {target_index} download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {e}; retrying"
+                    )
+                    time.sleep(30)
+                    try:
+                        self._clear_grid_downloads()
+                    except Exception as clear_error:
+                        logging.warning(f"failed to clear grid downloads: {clear_error}")
+                    self.navigate_to_archive()
+                else:
+                    break
             for try_n in range(1, 4):
                 try:
                     path.rename(self.target_archive_download_path.joinpath(path.name))

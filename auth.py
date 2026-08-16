@@ -76,10 +76,16 @@ class GoogleLoginModel:
 
     def wait_for_page_load(self):
         logging.debug("waiting for page load state")
-        WebDriverWait(self.driver, self._timeout_s).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        logging.debug("page is in load state, proceeding")
+        try:
+            WebDriverWait(self.driver, self._timeout_s).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            logging.debug("page is in load state, proceeding")
+        except SeleniumTimeoutException:
+            logging.warning(
+                "page did not reach readyState=complete within %.1fs, proceeding",
+                self._timeout_s,
+            )
 
     def wait_for_navigation_settle(self):
         deadline = time.monotonic() + self._timeout_s
