@@ -87,10 +87,38 @@ class GoogleLoginModel:
                 self._timeout_s,
             )
 
+    def _net_error_target(self):
+        try:
+            uri = self.driver.execute_script("return document.documentURI")
+        except Exception:
+            return None
+        if not isinstance(uri, str) or not uri.startswith("about:neterror"):
+            return None
+        return parse_qs(urlparse(uri).query).get("u", [None])[0]
+
+    def recover_from_net_error(self):
+        failing_url = self._net_error_target()
+        if not failing_url:
+            return
+        logging.warning(f"network error page detected, failing url: {failing_url}")
+        host = urlparse(failing_url).hostname or ""
+        if host.startswith("accounts.google.") and host != "accounts.google.com":
+            fallback_url = failing_url.replace(host, "accounts.google.com", 1)
+            logging.warning(f"retrying via {fallback_url}")
+            self.driver.get(fallback_url)
+            self.wait_for_page_load()
+            if not self._net_error_target():
+                return
+            logging.warning("retry via accounts.google.com failed too")
+        logging.warning(f"navigating straight to {TAKEOUT_URL}")
+        self.driver.get(TAKEOUT_URL)
+        self.wait_for_page_load()
+
     def wait_for_navigation_settle(self):
         deadline = time.monotonic() + self._timeout_s
         while True:
             self.wait_for_page_load()
+            self.recover_from_net_error()
             self.is_refresh_complete()
             if self.driver.current_url.startswith(TAKEOUT_BASEURL):
                 return

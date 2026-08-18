@@ -206,7 +206,7 @@ class TakeoutModel:
                     return path
 
             current_url = self.driver.current_url
-            if "accounts.google.com" in current_url:
+            if "accounts.google." in current_url:
                 logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
                 self.ensure_auth()
                 continue
