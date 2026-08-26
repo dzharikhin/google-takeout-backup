@@ -380,6 +380,12 @@ class GoogleLoginModel:
             transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
             transition(
                 source=States.password_entry,
+                dest=States.account_chooser,
+                conditions=ref(is_on_account_choose_form),
+                after="select_and_proceed",
+            ),
+            transition(
+                source=States.password_entry,
                 dest=States.challenge_skotp,
                 conditions=ref(is_skotp),
                 after=ref(skip_skotp),
