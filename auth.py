@@ -12,8 +12,19 @@ from selenium.common.exceptions import TimeoutException as SeleniumTimeoutExcept
 from transitions import Machine, State, Event
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
 
-TAKEOUT_BASEURL = "https://takeout.google.com/"
+TAKEOUT_DOMAIN = "takeout.google.com"
+TAKEOUT_BASEURL = f"https://{TAKEOUT_DOMAIN}/"
 TAKEOUT_URL = f"{TAKEOUT_BASEURL}settings/takeout/custom/photos"
+ACCOUNTS_HOST_PREFIX = "accounts.google."
+ACCOUNTS_URL = f"https://${ACCOUNTS_HOST_PREFIX}com/"
+
+
+def is_takeout_host(url):
+    return (urlparse(url).hostname or "") == TAKEOUT_DOMAIN
+
+
+def is_accounts_host(url):
+    return (urlparse(url).hostname or "").startswith(ACCOUNTS_HOST_PREFIX)
 
 
 def name_enricher(outer):
@@ -63,6 +74,8 @@ class GoogleLoginModel:
     _PROGRESS_BAR = (By.CSS_SELECTOR, '[role="progressbar"]')
     _IDENTIFIER_NEXT = (By.CSS_SELECTOR, "button#identifierNext, div#identifierNext")
     _PASSWORD_NEXT = (By.CSS_SELECTOR, "button#passwordNext, div#passwordNext")
+    _RESTORE_LINK = (By.CSS_SELECTOR, '[href*="/signinoptions/password"]')
+    _TAKEOUT_LINK = (By.CSS_SELECTOR, f'[href^="{TAKEOUT_BASEURL}"]')
 
     def __init__(self, driver: WebDriver, timeout, mfa_confirm_timeout=None, email_env="USER_E", password_env="USER_P"):
         self.driver = driver
@@ -101,16 +114,12 @@ class GoogleLoginModel:
         if not failing_url:
             return
         logging.warning(f"network error page detected, failing url: {failing_url}")
-        host = urlparse(failing_url).hostname or ""
-        if host.startswith("accounts.google.") and host != "accounts.google.com":
-            fallback_url = failing_url.replace(host, "accounts.google.com", 1)
-            logging.warning(f"retrying via {fallback_url}")
-            self.driver.get(fallback_url)
-            self.wait_for_page_load()
-            if not self._net_error_target():
-                return
-            logging.warning("retry via accounts.google.com failed too")
-        logging.warning(f"navigating straight to {TAKEOUT_URL}")
+        logging.warning(f"retrying {failing_url}")
+        self.driver.get(failing_url)
+        self.wait_for_page_load()
+        if not self._net_error_target():
+            return
+        logging.warning(f"retry failed too; navigating straight to {TAKEOUT_URL}")
         self.driver.get(TAKEOUT_URL)
         self.wait_for_page_load()
 
@@ -120,7 +129,7 @@ class GoogleLoginModel:
             self.wait_for_page_load()
             self.recover_from_net_error()
             self.is_refresh_complete()
-            if self.driver.current_url.startswith(TAKEOUT_BASEURL):
+            if is_takeout_host(self.driver.current_url):
                 return
             last_url = self.driver.current_url
             url_stable = True
@@ -148,7 +157,7 @@ class GoogleLoginModel:
                 lambda d: d.find_element(*self._PROGRESS_BAR).get_attribute("aria-hidden") == "true"
             )
         except SeleniumTimeoutException:
-            if self.driver.current_url.startswith(TAKEOUT_BASEURL):
+            if is_takeout_host(self.driver.current_url):
                 logging.debug("is_refresh_complete: refresh bar has aria-hidden=false, but we're on takeout, ok")
                 return
             logging.debug("is_refresh_complete: refresh bar has aria-hidden=false, raising")
@@ -204,11 +213,7 @@ class GoogleLoginModel:
         logging.debug("is_restore")
         self.is_refresh_complete()
         try:
-            WebDriverWait(self.driver, self._timeout_s).until(
-                EC.visibility_of_element_located(
-                    (By.CSS_SELECTOR, '[href^="https://myaccount.google.com/signinoptions/password"]')
-                )
-            )
+            WebDriverWait(self.driver, self._timeout_s).until(EC.visibility_of_element_located(self._RESTORE_LINK))
             return True
         except SeleniumTimeoutException as e:
             logging.debug(f"is_restore:{e} returning false")
@@ -220,7 +225,7 @@ class GoogleLoginModel:
 
         def _check_url(driver):
             parsed = urlparse(driver.current_url)
-            return "gds.google.com/web/homeaddress" in parsed.path or parsed.path.endswith("/homeaddress")
+            return parsed.path.endswith("/homeaddress")
 
         try:
             WebDriverWait(self.driver, self._timeout_s).until(_check_url)
@@ -246,11 +251,11 @@ class GoogleLoginModel:
 
     def is_takeout_url(self):
         logging.debug("is_takeout_url")
-        if not self.driver.current_url.startswith(TAKEOUT_BASEURL):
+        if not is_takeout_host(self.driver.current_url):
             return False
         try:
             WebDriverWait(self.driver, max(5.0, self._timeout_s / 3)).until(
-                lambda d: not d.current_url.startswith(TAKEOUT_BASEURL)
+                lambda d: not is_takeout_host(d.current_url)
             )
             return False
         except SeleniumTimeoutException as e:
@@ -312,12 +317,10 @@ class GoogleLoginModel:
 
     def click_skip_restore(self):
         proceed_button = WebDriverWait(self.driver, self._timeout_s).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, '[href^="https://takeout.google.com/"]'))
+            EC.element_to_be_clickable(self._TAKEOUT_LINK)
         )
         proceed_button.click()
-        WebDriverWait(self.driver, self._timeout_s).until(
-            EC.invisibility_of_element_located((By.CSS_SELECTOR, '[href^="https://takeout.google.com/"]'))
-        )
+        WebDriverWait(self.driver, self._timeout_s).until(EC.invisibility_of_element_located(self._TAKEOUT_LINK))
 
     def skip_address(self):
         parsed = urlparse(self.driver.current_url)

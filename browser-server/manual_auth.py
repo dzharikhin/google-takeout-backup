@@ -9,7 +9,15 @@ import time
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 
-from auth import States, GoogleLoginModel, GoogleLoginMachine, TAKEOUT_BASEURL
+from auth import (
+    ACCOUNTS_URL,
+    GoogleLoginMachine,
+    GoogleLoginModel,
+    States,
+    TAKEOUT_BASEURL,
+    is_accounts_host,
+    is_takeout_host,
+)
 from cookies import sanitize_cookies
 
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +62,7 @@ def main():
 
     def capture_and_merge_accounts_cookies(base_cookies):
         print("Capturing accounts.google.com cookies for full session")
-        driver.get("https://accounts.google.com/")
+        driver.get(ACCOUNTS_URL)
         time.sleep(3)
         accounts_cookies = driver.get_cookies()
 
@@ -92,14 +100,14 @@ def main():
 
         if "virtual" == display_mode:
             print(f"{display_mode=}: executing automatic login script")
-            if driver.current_url.startswith("https://accounts.google.com/v3/signin"):
+            if is_accounts_host(driver.current_url):
                 model = GoogleLoginModel(driver=driver, timeout=default_timeout)
                 machine = GoogleLoginMachine(model, states=States.as_list(), initial=States.start, queued=True)
                 model.sign_in()
                 machine.ensure_auth()
                 print("login script is finished")
 
-            if driver.current_url.startswith(TAKEOUT_BASEURL):
+            if is_takeout_host(driver.current_url):
                 handle_manual_auth_close()
                 return
         else:
@@ -112,7 +120,7 @@ def main():
 
                 def on_load(data):
                     url = getattr(data, "url", None) or (data.get("url") if isinstance(data, dict) else "") or ""
-                    if url.startswith(TAKEOUT_BASEURL):
+                    if is_takeout_host(url):
                         print(f"BiDi load event for takeout URL: {url}")
                         done.set()
 
@@ -145,7 +153,7 @@ def main():
                 print(f"BiDi unavailable (Grid may not expose webSocketUrl): {e}", file=sys.stderr)
                 print("Falling back to polled URL detection (with bounded race).", file=sys.stderr)
                 time.sleep(1)
-                if not driver.current_url.startswith(TAKEOUT_BASEURL):
+                if not is_takeout_host(driver.current_url):
                     print("User navigated away from takeout, saving auth state...")
                     handle_manual_auth_close()
                     return

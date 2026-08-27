@@ -28,7 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from transitions import Event, Machine, State
 from transitions.experimental.utils import add_transitions, transition, with_model_definitions
 
-from auth import TAKEOUT_BASEURL, GoogleLoginMachine, GoogleLoginModel, States
+from auth import ACCOUNTS_HOST_PREFIX, TAKEOUT_BASEURL, GoogleLoginMachine, GoogleLoginModel, States
 from cookies import sanitize_cookies
 
 
@@ -206,7 +206,7 @@ class TakeoutModel:
                     return path
 
             current_url = self.driver.current_url
-            if "accounts.google." in current_url:
+            if ACCOUNTS_HOST_PREFIX in current_url:
                 logging.info(f"Detected auth redirect to {current_url}, triggering reauth")
                 self.ensure_auth()
                 continue
