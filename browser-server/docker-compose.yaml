@@ -1,6 +1,7 @@
 services:
   undetected-grid:
     restart: always
+    init: true
     image: gtb-undetected-grid:${VERSION:-latest}
     build:
       context: ..
