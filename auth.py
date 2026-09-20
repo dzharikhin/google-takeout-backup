@@ -8,6 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException as SeleniumTimeoutException
+from selenium.common.exceptions import WebDriverException
 
 from transitions import Machine, State, Event
 from transitions.experimental.utils import with_model_definitions, add_transitions, transition
@@ -16,7 +17,40 @@ TAKEOUT_DOMAIN = "takeout.google.com"
 TAKEOUT_BASEURL = f"https://{TAKEOUT_DOMAIN}/"
 TAKEOUT_URL = f"{TAKEOUT_BASEURL}settings/takeout/custom/photos"
 ACCOUNTS_HOST_PREFIX = "accounts.google."
-ACCOUNTS_URL = f"https://${ACCOUNTS_HOST_PREFIX}com/"
+ACCOUNTS_URL = f"https://{ACCOUNTS_HOST_PREFIX}com/"
+
+
+def safe_get(driver, url, attempts=3, delay_s=2.0):
+    """Navigate to url, retrying transient network failures.
+
+    Firefox reports transient navigation failures (HTTP/2 protocol violations,
+    dropped connections) as ``about:neterror`` error pages; geckodriver surfaces
+    them as a WebDriverException raised by ``get``. Hanging navigations are cut
+    off by the page load timeout (set on the driver) as a TimeoutException.
+    Both are retried here; anything else (e.g. a dead session) is re-raised.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            driver.get(url)
+            return
+        except SeleniumTimeoutException as e:
+            if attempt == attempts:
+                raise
+            logging.warning(
+                f"navigation to {url} timed out (attempt {attempt}/{attempts}), retrying in {delay_s}s: {e}"
+            )
+            try:
+                driver.execute_script("window.stop();")
+            except Exception as stop_error:
+                logging.debug(f"window.stop() after page load timeout failed, ignoring: {stop_error}")
+            time.sleep(delay_s)
+        except WebDriverException as e:
+            if "about:neterror" not in str(e) or attempt == attempts:
+                raise
+            logging.warning(
+                f"navigation to {url} hit a network error page (attempt {attempt}/{attempts}), retrying in {delay_s}s: {e}"
+            )
+            time.sleep(delay_s)
 
 
 def is_takeout_host(url):
@@ -86,6 +120,7 @@ class GoogleLoginModel:
         self.email_env = email_env
         self.password_env = password_env
         self.state = "start"
+        self._auth_continue_url = None
 
     def wait_for_page_load(self):
         logging.debug("waiting for page load state")
@@ -114,18 +149,38 @@ class GoogleLoginModel:
         if not failing_url:
             return
         logging.warning(f"network error page detected, failing url: {failing_url}")
+        target = self._auth_continue_url or TAKEOUT_URL
+        if is_accounts_host(failing_url):
+            # session-sync redirects (SetSID) carry single-use tokens and the regional
+            # accounts domains may be unreachable; the .com cookies are set by that
+            # point, so skip the dead link and resume at the original navigation target
+            logging.warning(f"failing url is on an accounts host, navigating straight to {target}")
+            safe_get(self.driver, target)
+            self.wait_for_page_load()
+            return
         logging.warning(f"retrying {failing_url}")
-        self.driver.get(failing_url)
+        try:
+            safe_get(self.driver, failing_url)
+        except WebDriverException as e:
+            logging.warning(f"retrying {failing_url} failed: {e}")
         self.wait_for_page_load()
         if not self._net_error_target():
             return
-        logging.warning(f"retry failed too; navigating straight to {TAKEOUT_URL}")
-        self.driver.get(TAKEOUT_URL)
+        logging.warning(f"retry failed too; navigating straight to {target}")
+        safe_get(self.driver, target)
         self.wait_for_page_load()
+
+    def _track_continue_url(self):
+        if not is_accounts_host(self.driver.current_url):
+            return
+        continue_url = parse_qs(urlparse(self.driver.current_url).query).get("continue", [None])[0]
+        if continue_url:
+            self._auth_continue_url = continue_url
 
     def wait_for_navigation_settle(self):
         deadline = time.monotonic() + self._timeout_s
         while True:
+            self._track_continue_url()
             self.wait_for_page_load()
             self.recover_from_net_error()
             self.is_refresh_complete()
@@ -326,7 +381,7 @@ class GoogleLoginModel:
         parsed = urlparse(self.driver.current_url)
         params = parse_qs(parsed.query)
         continue_url = params.get("continue", [TAKEOUT_BASEURL])[0]
-        self.driver.get(continue_url)
+        safe_get(self.driver, continue_url)
         WebDriverWait(self.driver, self._timeout_s).until(lambda d: "homeaddress" not in d.current_url)
 
     def handle_challenge_confirm(self):

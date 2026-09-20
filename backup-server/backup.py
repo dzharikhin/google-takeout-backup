@@ -28,7 +28,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 from transitions import Event, Machine, State
 from transitions.experimental.utils import add_transitions, transition, with_model_definitions
 
-from auth import ACCOUNTS_HOST_PREFIX, TAKEOUT_BASEURL, GoogleLoginMachine, GoogleLoginModel, States
+from auth import (
+    ACCOUNTS_HOST_PREFIX,
+    TAKEOUT_BASEURL,
+    TAKEOUT_URL,
+    GoogleLoginMachine,
+    GoogleLoginModel,
+    States,
+    safe_get,
+)
 from cookies import sanitize_cookies
 
 
@@ -55,6 +63,9 @@ BACKUP_FRESHNESS_INTERVAL = datetime.timedelta(hours=int(os.getenv("BACKUP_FRESH
 TIMEOUT_MILLIS = int(os.getenv("TIMEOUT_MILLIS") or "30000")
 DOWNLOAD_TIMEOUT_MILLIS = int(os.getenv("DOWNLOAD_TIMEOUT_MILLIS") or "3_600_000")
 DOWNLOAD_ATTEMPTS = int(os.getenv("DOWNLOAD_ATTEMPTS") or "5")
+# must stay below the Grid's ~300s request timeout, otherwise a hung navigation
+# outlives the session instead of surfacing as a recoverable TimeoutException
+PAGE_LOAD_TIMEOUT_MILLIS = int(os.getenv("PAGE_LOAD_TIMEOUT_MILLIS") or "120_000")
 
 auth_json_path = pathlib.Path(".auth_encoded")
 downloads_path = pathlib.Path("downloads")
@@ -301,7 +312,7 @@ class TakeoutModel:
 
     def find_most_recent_archive(self):
         for archive_link in self.archive_links:
-            self.driver.get(archive_url(archive_link))
+            safe_get(self.driver, archive_url(archive_link))
             self.ensure_auth()
             buttons = self.driver.find_elements(
                 By.CSS_SELECTOR, 'a[href*="takeout/download"]:not(div[data-download-uri] a)'
@@ -327,7 +338,7 @@ class TakeoutModel:
         self.target_archive_download_path.mkdir()
 
     def navigate_to_archive(self):
-        self.driver.get(archive_url(self.target_archive))
+        safe_get(self.driver, archive_url(self.target_archive))
         self.ensure_auth()
         elements = self.driver.find_elements(By.CSS_SELECTOR, 'div[data-download-uri] a[href*="takeout/download"]')
         self.archive_parts = [parse_part_index(el.get_attribute("href")) for el in elements]
@@ -378,7 +389,7 @@ class TakeoutModel:
             logging.info(f"downloaded {i}/{total} parts")
 
     def request_new_archive(self):
-        self.driver.get(f"{TAKEOUT_BASEURL}settings/takeout/custom/photos")
+        safe_get(self.driver, TAKEOUT_URL)
         WebDriverWait(self.driver, self._timeout_s).until(
             lambda d: next(
                 (
@@ -543,7 +554,7 @@ def load_auth_cookies(auth_json_path):
 
 
 def set_cookies_for_domains(driver, cookies):
-    driver.get("https://www.google.com/")
+    safe_get(driver, "https://www.google.com/")
     driver.delete_all_cookies()
     for cookie in cookies:
         driver.add_cookie(cookie)
@@ -570,6 +581,7 @@ def main():
         command_executor=os.getenv("BROWSER_SERVER_URL", "http://localhost:4444"),
         options=options,
     )
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_MILLIS / 1000)
 
     try:
         cookies = load_auth_cookies(auth_json_path)
@@ -585,7 +597,7 @@ def main():
             except Exception as e:
                 logging.warning(f"failed to read cookies: {e}")
 
-        driver.get(f"{TAKEOUT_BASEURL}manage")
+        safe_get(driver, f"{TAKEOUT_BASEURL}manage")
         model = TakeoutModel(driver, last_snapshot_timestamp)
         TakeoutMachine(
             model,

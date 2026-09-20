@@ -17,6 +17,7 @@ from auth import (
     TAKEOUT_BASEURL,
     is_accounts_host,
     is_takeout_host,
+    safe_get,
 )
 from cookies import sanitize_cookies
 
@@ -62,7 +63,7 @@ def main():
 
     def capture_and_merge_accounts_cookies(base_cookies):
         print("Capturing accounts.google.com cookies for full session")
-        driver.get(ACCOUNTS_URL)
+        safe_get(driver, ACCOUNTS_URL)
         time.sleep(3)
         accounts_cookies = driver.get_cookies()
 
@@ -95,7 +96,7 @@ def main():
             driver.quit()
 
     try:
-        driver.get(TAKEOUT_BASEURL)
+        safe_get(driver, TAKEOUT_BASEURL)
         print(f"Current URL: {driver.current_url}")
 
         if "virtual" == display_mode:
