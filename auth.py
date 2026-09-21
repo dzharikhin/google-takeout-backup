@@ -277,17 +277,9 @@ class GoogleLoginModel:
     def is_on_address_entry_form(self):
         logging.debug("is_on_address_entry_form")
         self.is_refresh_complete()
-
-        def _check_url(driver):
-            parsed = urlparse(driver.current_url)
-            return parsed.path.endswith("/homeaddress")
-
-        try:
-            WebDriverWait(self.driver, self._timeout_s).until(_check_url)
-            return True
-        except SeleniumTimeoutException as e:
-            logging.debug(f"is_on_address_entry_form:{e} returning false")
-            return False
+        # one-shot: navigation is already settled by prepare_event, and a URL poll
+        # would burn the full timeout on every non-matching evaluation
+        return urlparse(self.driver.current_url).path.endswith("/homeaddress")
 
     def is_password_challenge(self):
         logging.debug("is_password_challenge")
@@ -381,7 +373,23 @@ class GoogleLoginModel:
         parsed = urlparse(self.driver.current_url)
         params = parse_qs(parsed.query)
         continue_url = params.get("continue", [TAKEOUT_BASEURL])[0]
-        safe_get(self.driver, continue_url)
+        if is_accounts_host(continue_url):
+            # the continue link on the address prompt re-enters the ServiceLogin →
+            # regional SetSID sync hop, which may be unreachable; the .com cookies
+            # are set by this point, so resume at the original navigation target
+            target = self._auth_continue_url or TAKEOUT_BASEURL
+            logging.warning(f"continue url is on an accounts host, navigating straight to {target}")
+            continue_url = target
+        try:
+            safe_get(self.driver, continue_url)
+        except WebDriverException as e:
+            if "about:neterror" not in str(e) and not isinstance(e, SeleniumTimeoutException):
+                raise
+            self.recover_from_net_error()
+            if not is_takeout_host(self.driver.current_url):
+                target = self._auth_continue_url or TAKEOUT_BASEURL
+                logging.warning(f"still off takeout after recovery, navigating straight to {target}")
+                safe_get(self.driver, target)
         WebDriverWait(self.driver, self._timeout_s).until(lambda d: "homeaddress" not in d.current_url)
 
     def handle_challenge_confirm(self):
@@ -422,13 +430,13 @@ class GoogleLoginModel:
 
     @name_enricher(
         add_transitions(
+            transition(source=States.offer_to_restore, dest=States.auth_success, conditions=ref(is_takeout_url)),
             transition(
                 source=States.offer_to_restore,
                 dest=States.address_entry,
                 conditions=ref(is_on_address_entry_form),
                 after=ref(leave_address),
             ),
-            transition(source=States.offer_to_restore, dest=States.auth_success, conditions=ref(is_takeout_url)),
         )
     )
     def skip_restoration(self): ...
@@ -436,6 +444,12 @@ class GoogleLoginModel:
     @name_enricher(
         add_transitions(
             transition(source=States.password_entry, dest=States.auth_success, conditions=ref(is_takeout_url)),
+            transition(
+                source=States.password_entry,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
             transition(
                 source=States.password_entry,
                 dest=States.account_chooser,
@@ -459,12 +473,6 @@ class GoogleLoginModel:
                 dest=States.offer_to_restore,
                 conditions=ref(is_restore),
                 after=ref(skip_restoration),
-            ),
-            transition(
-                source=States.password_entry,
-                dest=States.address_entry,
-                conditions=ref(is_on_address_entry_form),
-                after=ref(leave_address),
             ),
         )
     )
@@ -503,6 +511,12 @@ class GoogleLoginModel:
             ),
             transition(
                 source=States.start,
+                dest=States.address_entry,
+                conditions=ref(is_on_address_entry_form),
+                after=ref(leave_address),
+            ),
+            transition(
+                source=States.start,
                 dest=States.account_chooser,
                 conditions=ref(is_on_account_choose_form),
                 after=ref(select_and_proceed),
@@ -510,31 +524,25 @@ class GoogleLoginModel:
             transition(
                 source=States.start, dest=States.email_entry, conditions=ref(is_signin), after=ref(submit_email)
             ),
-            transition(
-                source=States.start,
-                dest=States.address_entry,
-                conditions=ref(is_on_address_entry_form),
-                after=ref(leave_address),
-            ),
         )
     )
     def sign_in(self): ...
 
     @name_enricher(
         add_transitions(
-            transition(
-                source=States.challenge_confirm,
-                dest=States.offer_to_restore,
-                conditions=ref(is_restore),
-                after=ref(skip_restoration),
-            ),
+            transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
             transition(
                 source=States.challenge_confirm,
                 dest=States.address_entry,
                 conditions=ref(is_on_address_entry_form),
                 after=ref(leave_address),
             ),
-            transition(source=States.challenge_confirm, dest=States.auth_success, conditions=ref(is_takeout_url)),
+            transition(
+                source=States.challenge_confirm,
+                dest=States.offer_to_restore,
+                conditions=ref(is_restore),
+                after=ref(skip_restoration),
+            ),
         )
     )
     def confirm_mfa(self): ...

@@ -26,6 +26,7 @@ logging.getLogger("transitions.core").setLevel(logging.ERROR)
 
 downloads_path = pathlib.Path("./browser-downloads")
 default_timeout = float(os.getenv("TIMEOUT_MILLIS") or "30000")
+page_load_timeout = float(os.getenv("PAGE_LOAD_TIMEOUT_MILLIS") or "120000")
 
 
 def main():
@@ -44,6 +45,7 @@ def main():
     )
     print("Session capabilities:", json.dumps(driver.capabilities, default=str))
     driver.set_script_timeout(default_timeout / 1000)
+    driver.set_page_load_timeout(page_load_timeout / 1000)
     driver.implicitly_wait(default_timeout / 1000)
 
     def wait_for_session_cookies():
